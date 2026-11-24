@@ -5,20 +5,54 @@ on:
     paths: ['.github/workflows/publish-v0-1-0-portable.yml']
 permissions:
   contents: write
+concurrency: arcglow-v0-1-0-release
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
-      - name: Verify and attach the executable
+      - name: Verify and replace published files
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           base_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA"
-          asset='ArcGlow-v0.1.0-Portable.exe'
-          curl -fsSL --retry 2 "$base_url/$asset" -o "$asset"
-          curl -fsSL --retry 2 "$base_url/release-notes.md" -o release-notes.md
-          curl -fsSL --retry 2 "$base_url/SHA256SUMS" -o SHA256SUMS
+          tag='v0.1.0'
+          portable='ArcGlow-v0.1.0-Portable.exe'
+          sources='ArcGlow-v0.1.0-Source.zip'
+          candidate='ArcGlow-v0.1.0-Portable-pending.exe'
+          retired='ArcGlow-v0.1.0-Portable-retired.exe'
+          endpoint="repos/$GITHUB_REPOSITORY/releases"
+          for file in "$portable" "$sources" release-notes.md SHA256SUMS; do
+            curl --fail --silent --show-error --location --retry 2 "$base_url/$file" -o "$file"
+          done
           sha256sum --check SHA256SUMS
-          gh release upload v0.1.0 "$asset#Windows 便携版" --repo "$GITHUB_REPOSITORY"
-          gh release edit v0.1.0 --repo "$GITHUB_REPOSITORY" --verify-tag --latest --notes-file release-notes.md
+          release="$(gh api "$endpoint/tags/$tag")"
+          test "$(jq -r .id <<<"$release")" = 456542993
+          check_asset() {
+            test "$(gh api "$endpoint/assets/$1" --jq .digest)" = "sha256:$2"
+          }
+          check_asset 786997723 0666b82953ed7cf72d2dea84441863140de0017d73f2e1bbef8690e7c724e46a
+          test "$(gh api "$endpoint/assets/786997723" --jq .name)" = "$portable"
+          cp "$portable" "$candidate"
+          gh release upload "$tag" "$candidate" "$sources#当前源码（ZIP）" --repo "$GITHUB_REPOSITORY"
+          release="$(gh api "$endpoint/tags/$tag")"
+          next="$(jq -er --arg name "$candidate" '.assets[] | select(.name == $name).id' <<<"$release")"
+          source_id="$(jq -er --arg name "$sources" '.assets[] | select(.name == $name).id' <<<"$release")"
+          check_asset "$next" 4e67fc9f7c88ee32514a6f72ff1907c7c68e3776842c0362fc78d763b89d14b2
+          check_asset "$source_id" 968b48394249914ace9c0ce608be420cf56801a7765d6ca602b18f97b521e762
+          gh api --method PATCH "$endpoint/assets/786997723" -f name="$retired" --silent
+          if ! gh api --method PATCH "$endpoint/assets/$next" -f name="$portable" -f label="Windows 便携版" --silent; then
+            gh api --method PATCH "$endpoint/assets/786997723" -f name="$portable" --silent
+            exit 1
+          fi
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --verify-tag --latest --notes-file release-notes.md
+          check_asset 786997723 0666b82953ed7cf72d2dea84441863140de0017d73f2e1bbef8690e7c724e46a
+          check_asset 786785007 4151eebfa7133e7b88d3e1cb04419de3e6932fbe7aca07987737788606fb8cdc
+          check_asset 786829297 56ba48a2b16a782ea559edacfd2a92555f5f79e2517490b8cfe8f586178e4dd5
+          check_asset 786524288 a30b3668482544be5097cf6714d479f80015f8343d353ca3affecdcccf51a87f
+          for id in 786997723 786785007 786829297 786524288; do
+            gh api --method DELETE "$endpoint/assets/$id" --silent
+          done
+          release="$(gh api "$endpoint/tags/$tag")"
+          jq -e --arg exe "$portable" --arg zip "$sources" '[.assets[].name] | sort == ([$exe, $zip] | sort)' <<<"$release"

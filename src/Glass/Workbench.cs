@@ -153,6 +153,7 @@ namespace GlassClicker
         public bool PauseOthersWhileEditing { get { return preferences.PauseOthersWhileEditing; } }
         public bool RememberPanelPosition { get { return preferences.RememberPanelPosition; } }
         public bool RestoreLayoutOnStart { get { return preferences.RestoreLayoutOnStart; } }
+        public bool AlwaysOnTop { get { return preferences.AlwaysOnTop; } }
         public bool InterfaceSounds { get { return preferences.InterfaceSounds; } }
         public int InterfaceSoundVolume { get { return preferences.InterfaceSoundVolume ?? AppSettings.DefaultInterfaceVolume; } }
         public string CurrentProfileName { get { return profileName; } }
@@ -216,8 +217,9 @@ namespace GlassClicker
             {
                 if (args.Button == Forms.MouseButtons.Right)
                     app.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ShowTrayMenu));
+                else if (args.Button == Forms.MouseButtons.Left)
+                    app.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ShowFromTray));
             };
-            tray.DoubleClick += (sender, args) => { if (hidden) ToggleVisibility(); else ShowOrbs(); };
 
             hub.Grabbed = () => { Touch(); CancelMotion(hub); };
             hub.LocationChanged += (sender, args) =>
@@ -446,6 +448,20 @@ namespace GlassClicker
             else if (anchor != null && (anchor == hub || tasks.Any(task => task.Orb == anchor))) OpenStatus(anchor, position);
         }
 
+        private void ShowFromTray()
+        {
+            if (exiting || disposed) return;
+            if (hidden) { ToggleVisibility(); return; }
+            if (hub.IsVisible) hub.RaiseWithoutFocus();
+            foreach (var task in tasks)
+                if (task.Orb.IsVisible) task.Orb.RaiseWithoutFocus();
+            if (panel != null) panel.RaiseWithoutFocus();
+            if (status != null) status.RaiseWithoutFocus();
+            if (settingsDialog != null) settingsDialog.RaiseWithoutFocus();
+            if (profileBrowser != null) profileBrowser.RaiseWithoutFocus();
+            if (guide != null) guide.RaiseWithoutFocus();
+        }
+
         private static IntPtr ForegroundFullscreen()
         {
             var foreground = Windows.ForegroundTarget();
@@ -495,12 +511,14 @@ namespace GlassClicker
             }
             var current = Windows.ForegroundTarget();
             if (current == IntPtr.Zero) return;
-            if (current != lastForeground)
+            var switched = current != lastForeground;
+            if (switched)
             {
                 lastForeground = current;
                 QueueOutlineLayout();
             }
-            if (tracking != null && (targetPicker == null || !targetPicker.Available)) SelectForeground(tracking, current);
+            if (tracking != null && (switched || targetPicker == null || !targetPicker.Available))
+                SelectForeground(tracking, current);
         }
 
         private void SelectForeground(ClickTask task, IntPtr current)
@@ -566,7 +584,7 @@ namespace GlassClicker
                 return;
             }
             Arm(task);
-            Report(targetPicker.Available ? "点一下要控制的窗口" : "切到要控制的窗口");
+            Report(targetPicker.Available ? "点一下或切到要控制的窗口" : "切到要控制的窗口");
         }
 
         private ClickTask MakeTask(SavedJob saved, int index, int? color = null)
@@ -847,8 +865,8 @@ namespace GlassClicker
             CloseEditor(true);
             mergeAfterEditor = null;
             CloseStatus();
-            if (editing != null && !Collected) ShowFolded(editing);
-            if (!expanded) { RefreshLabels(); return; }
+            if (!expanded) { ShowOrbs(); ShowFromTray(); return; }
+            if (editing != null) ShowFolded(editing);
 
             Touch();
             expanded = false;
@@ -899,7 +917,16 @@ namespace GlassClicker
         {
             if (hidden || !tasks.Contains(task)) return;
             Touch();
-            if (Collected) { RefreshLabels(); return; }
+            if (Collected)
+            {
+                hub.SetProcesses(tasks.Select(item => item.Color).ToArray());
+                hub.Transition(1, 1);
+                hub.IsHitTestVisible = true;
+                ShowWindow(hub, HubPosition());
+                hub.RaiseWithoutFocus();
+                RefreshLabels();
+                return;
+            }
             var orb = task.Orb;
             var duration = origin.HasValue ? 370 : 230;
             CancelMotion(orb);
@@ -1058,16 +1085,17 @@ namespace GlassClicker
         private void BindLocator(ClickTask task, Locator marker, ScreenPoint point)
         {
             ClearLocatorPreview();
-            var target = TargetBinding.Create(Windows.TargetAt(point), point);
+            var window = Windows.TargetAt(point);
+            var target = TargetBinding.Create(window, point) ?? TargetBinding.Create(window);
             var hasEditor = panel != null && panel.Task == task;
             if (target != null)
             {
                 SetTarget(task, target);
                 UiSounds.Click();
                 if (!hasEditor) ShowEditor(task);
-                Report("已切换到 " + target.Name);
+                Report((target.HasAnchor ? "已切换到 " : "已选择窗口 ") + target.Name);
             }
-            else if (hasEditor) Report("请把准星放在目标窗口的内容里。", true);
+            else if (hasEditor) Report("未选中窗口，可点选窗按钮后切到目标窗口。", true);
             if (!hasEditor) CloseLocator();
             else if (locator == marker)
             {
@@ -1328,7 +1356,7 @@ namespace GlassClicker
             add.Click += (sender, args) => AddTask();
             Glass.On(heading, add, 0, 5);
             var dismiss = Glass.Button("−"); dismiss.Height = 28; dismiss.FontSize = 18; dismiss.Padding = new Thickness(0);
-            Glass.Hint(dismiss, "收纳悬浮球");
+            Glass.Hint(dismiss, "收起到浮球，连点继续");
             AutomationProperties.SetName(dismiss, "收纳悬浮球");
             dismiss.Click += (sender, args) => Collapse();
             Glass.On(heading, dismiss, 0, 7); Glass.On(contents, heading, 0, 0);
@@ -1440,7 +1468,7 @@ namespace GlassClicker
             foreach (var task in tasks) task.Orb.Hide();
             ClearOutlines();
             if (!exiting) UpdateEditingPause();
-            tray.Text = Brand + " · 双击显示";
+            tray.Text = Brand + " · 单击显示";
         }
 
         public void ShowSettings()
@@ -1561,6 +1589,14 @@ namespace GlassClicker
             return SaveSettings();
         }
 
+        public string ChangeAlwaysOnTop(bool enabled)
+        {
+            preferences.AlwaysOnTop = enabled;
+            foreach (var window in app.Windows.OfType<GlassWindow>().ToArray())
+                window.Topmost = enabled;
+            return SaveSettings();
+        }
+
         public void SaveConfiguration(SettingsDialog owner)
         {
             OverlayInput.End(owner, true);
@@ -1591,6 +1627,7 @@ namespace GlassClicker
             try
             {
                 var picker = new ProfileDialog(owner, false, ProfileNames(), profileName, DeleteProfile, () => HasRunningJobs);
+                picker.Topmost = AlwaysOnTop;
                 profileBrowser = picker;
                 picker.Closed += (sender, args) => { profileBrowser = null; QueueEditingPause(); };
                 picker.ShowWithoutFocus(path => LoadConfiguration(owner, path));
@@ -1699,6 +1736,7 @@ namespace GlassClicker
             try
             {
                 var picker = new ProfileDialog(owner, true, ProfileNames(), profileName);
+                picker.Topmost = AlwaysOnTop;
                 using (new ForegroundReturn()) return picker.ShowDialog() == true ? picker.Value : null;
             }
             finally { ResumeShortcut(); }
@@ -2004,7 +2042,7 @@ namespace GlassClicker
             if (clock.ElapsedMilliseconds - trayRefresh > 500)
             {
                 trayRefresh = clock.ElapsedMilliseconds;
-                tray.Text = Running ? Brand + " · 已发送 " + total + " 次" : Brand + " · 连点器";
+                tray.Text = hidden ? Brand + " · 单击显示" : Running ? Brand + " · 已发送 " + total + " 次" : Brand + " · 连点器";
             }
         }
 
@@ -2078,10 +2116,15 @@ namespace GlassClicker
             outlines.Clear();
         }
 
-        private static void ShowWindow(GlassWindow window, ScreenPoint position, bool clamp = true)
+        private void ShowWindow(GlassWindow window, ScreenPoint position, bool clamp = true)
         {
+            if (window.Topmost != AlwaysOnTop) window.Topmost = AlwaysOnTop;
             window.Move(position, clamp);
-            if (!window.IsVisible) window.Show();
+            if (!window.IsVisible)
+            {
+                window.Show();
+                if (!AlwaysOnTop) window.RaiseWithoutFocus();
+            }
             window.Move(position, clamp);
         }
 

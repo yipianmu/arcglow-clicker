@@ -37,7 +37,7 @@ try {
         Get-Item -LiteralPath (Join-Path $PSScriptRoot $_) -Force
     }
     $bundleFiles += Get-ChildItem -LiteralPath $source -File -Recurse | Where-Object {
-        $_.Extension -in '.cs', '.ico', '.manifest', '.wav'
+        $_.Extension -in '.cs', '.ico', '.manifest', '.wav', '.png'
     }
     $zip = [IO.Compression.ZipFile]::Open($sourceZip, [IO.Compression.ZipArchiveMode]::Create)
     try {

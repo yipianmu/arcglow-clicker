@@ -43,7 +43,7 @@ namespace GlassClicker
             Card.Child = body;
             Content = Card;
 
-            var header = Columns(new GridLength(1, GridUnitType.Star), new GridLength(9), new GridLength(35), new GridLength(6), new GridLength(33));
+            var header = Columns(new GridLength(1, GridUnitType.Star), new GridLength(9), new GridLength(35), new GridLength(6), new GridLength(58));
             header.Background = Brushes.Transparent;
             Glass.On(header, Glass.Text("连点设置", 18, Glass.Ink, true), 0, 0);
             DragBy(header, position => host.EditorMoved(this, position));
@@ -51,9 +51,10 @@ namespace GlassClicker
             add.FontSize = 18; add.Padding = new Thickness(0); Glass.Hint(add, "添加一枚连点");
             AutomationProperties.SetName(add, "添加一枚连点");
             add.Click += (sender, args) => host.AddTask();
-            var fold = Glass.Button("−");
-            fold.FontSize = 19; fold.Padding = new Thickness(0); Glass.Hint(fold, "收起面板");
-            AutomationProperties.SetName(fold, "收起面板");
+            var fold = Glass.Button("− 收起");
+            fold.Padding = new Thickness(0);
+            Glass.Hint(fold, "收起到浮球，连点继续");
+            AutomationProperties.SetName(fold, "收起到浮球");
             fold.Click += (sender, args) => host.DismissEditor();
             Glass.On(header, add, 0, 2); Glass.On(header, fold, 0, 4);
             body.Children.Add(header);
@@ -156,7 +157,9 @@ namespace GlassClicker
             remove.Height = 23; remove.FontSize = 10.5; remove.Padding = new Thickness(4, 0, 4, 0);
             remove.Click += (sender, args) => host.RemoveTask(task);
             shortcut = Glass.Button(AppSettings.DefaultShortcut); shortcut.Height = 23; shortcut.FontSize = 10.5;
-            overlayKey = Glass.Button(""); overlayKey.Height = 23; overlayKey.FontSize = 10.5;
+            overlayKey = Glass.Button("隐藏"); overlayKey.Height = 23; overlayKey.FontSize = 10.5;
+            AutomationProperties.SetName(overlayKey, "隐藏浮球和面板");
+            Glass.Hint(overlayKey, "隐藏浮球和面板。点击系统托盘的弧光图标可恢复。");
             overlayKey.Click += (sender, args) => host.ToggleVisibility();
             shortcut.Click += (sender, args) => Record(true, value => host.ChangeShortcut(value));
             Glass.On(tools, settings, 0, 0); Glass.On(tools, remove, 0, 2);
@@ -184,9 +187,8 @@ namespace GlassClicker
             targetTile.BorderBrush = task.Tracking ? Palette.Get(task.Color).Marker : Brushes.Transparent;
             shortcut.Content = host.ShortcutText;
             shortcut.Foreground = host.ShortcutAvailable ? Glass.Blue : Glass.Gold;
-            overlayKey.Content = host.OverlayKeyText;
-            overlayKey.Visibility = host.OverlayKeyText == null ? Visibility.Collapsed : Visibility.Visible;
-            Glass.Hint(overlayKey, "一键隐藏或显示连点器");
+            var hideLabel = host.OverlayKeyText == null ? "隐藏" : "隐藏 " + host.OverlayKeyText;
+            if (!Equals(overlayKey.Content, hideLabel)) overlayKey.Content = hideLabel;
             var state = task.Worker.State;
             var showRim = task.OutputActive || !state.HasSession && task.Target != null && task.Target.Window != IntPtr.Zero;
             edge.SetLit(host.OutlineStrength > 0 && showRim, host.OutlineStrength);
@@ -276,7 +278,11 @@ namespace GlassClicker
         {
             if (!binding)
             {
-                if (args.Key == Key.Escape && !args.IsRepeat) { args.Handled = true; host.DismissEditor(); }
+                if (args.Key == Key.Escape && !args.IsRepeat && !(Keyboard.FocusedElement is TextBox))
+                {
+                    args.Handled = true;
+                    host.DismissEditor();
+                }
                 return;
             }
             args.Handled = true;
@@ -365,39 +371,29 @@ namespace GlassClicker
             checkmark.VerticalAlignment = VerticalAlignment.Center;
             checkmark.Margin = units.Margin;
             checkmark.Opacity = 0;
-            var increment = unit.Length == 0 ? 1 : 10;
-            var origin = 0;
-            var initial = minimum;
-            var edited = false;
-            Func<int> current = () =>
-            {
-                int number;
-                return Int32.TryParse(field.Text, out number) ? number : minimum;
-            };
-            Action<int> apply = number => field.Text = Math.Max(minimum, Math.Min(maximum, number)).ToString(CultureInfo.InvariantCulture);
-            surface.MouseEnter += (sender, args) =>
-            {
-                surface.Cursor = FocusProtected ? Cursors.IBeam : null;
-                Glass.Hint(surface, FocusProtected ? "点一下输入数字。也可以拖动或用滚轮调节。" : null);
-            };
-            field.TextChanged += (sender, args) =>
-            {
-                edited = true;
-                changed(field.Text);
-                host.ScheduleLayoutSave();
-            };
+            var saved = value;
+            var range = minimum + "–" + maximum + (unit.Length == 0 ? "" : " " + unit);
+            surface.Cursor = Cursors.IBeam;
+            Glass.Hint(surface, "点击输入 " + range);
             Func<bool, bool> confirm = explicitEnter =>
             {
-                if (!explicitEnter && !edited) return false;
+                if (!explicitEnter && field.Text == saved) return true;
                 int number;
-                if (!Int32.TryParse(field.Text, out number) || number < minimum || number > maximum)
+                if (!Int32.TryParse(field.Text, NumberStyles.None, CultureInfo.InvariantCulture, out number) ||
+                    number < minimum || number > maximum)
                 {
-                    ShowMessage("请输入 " + minimum + "–" + maximum + (unit.Length == 0 ? "" : " " + unit), true);
+                    ShowMessage("请输入 " + range, true);
                     if (explicitEnter) field.SelectAll();
+                    else field.Text = saved;
                     return false;
                 }
-                apply(number);
-                edited = false;
+                field.Text = number.ToString(CultureInfo.InvariantCulture);
+                if (field.Text != saved)
+                {
+                    saved = field.Text;
+                    changed(saved);
+                    host.ScheduleLayoutSave();
+                }
                 checkmark.BeginAnimation(OpacityProperty, Confirmation(true));
                 units.BeginAnimation(OpacityProperty, Confirmation(false));
                 ShowMessage("");
@@ -412,51 +408,37 @@ namespace GlassClicker
             };
             field.PreviewKeyDown += (sender, args) =>
             {
-                if (args.Key != Key.Enter) return;
-                args.Handled = true;
-                if (confirm(true)) Card.Focus();
-            };
-            Card.PreviewMouseDown += (sender, args) =>
-            {
-                if (field.IsKeyboardFocusWithin && !surface.IsMouseOver && confirm(false)) Card.Focus();
+                if (args.Key == Key.Enter)
+                {
+                    args.Handled = true;
+                    if (confirm(true)) Card.Focus();
+                }
+                else if (args.Key == Key.Escape)
+                {
+                    args.Handled = true;
+                    field.Text = saved;
+                    ShowMessage("");
+                    Card.Focus();
+                }
             };
             Deactivated += (sender, args) =>
             {
                 if (field.IsKeyboardFocusWithin) confirm(false);
             };
-            surface.PreviewMouseWheel += (sender, args) =>
+            surface.PreviewMouseLeftButtonDown += (sender, args) =>
             {
-                if (!FocusProtected && !field.IsKeyboardFocusWithin) return;
-                var step = increment;
-                if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0) step *= 10;
-                var ticks = Math.Sign(args.Delta) * Math.Max(1, Math.Abs(args.Delta) / 120);
-                apply(current() + ticks * step);
-                if (FocusProtected) confirm(false);
+                if (!FocusProtected || !field.IsEnabled) return;
                 args.Handled = true;
-            };
-            new PointerDrag(surface, (args, point) =>
-            {
-                if (!FocusProtected || !field.IsEnabled) return false;
-                origin = point.X;
-                initial = current();
-                return true;
-            }, point =>
-            {
-                if (OverlayInput.Editing(surface)) OverlayInput.End(this, true);
-                var distance = (point.X - origin) / Scale;
-                var precision = (Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? 10 : 1;
-                apply(initial + (int)(distance / 3) * increment * precision);
-            }, (point, dragged) =>
-            {
-                if (dragged) { confirm(false); return; }
+                if (FocusTextBox(field)) return;
+                if (OverlayInput.Editing(surface)) { field.SelectAll(); return; }
                 if (!OverlayInput.EditNumber(this, surface, field, confirm, editing =>
                 {
                     surface.BorderBrush = editing ? Glass.Blue : restingBorder;
                     if (!editing) return;
                     checkmark.BeginAnimation(OpacityProperty, null);
                     units.BeginAnimation(OpacityProperty, null);
-                })) ShowMessage("可以拖动或滚轮调节这个数值。", true);
-            });
+                })) ShowMessage("暂时无法输入，请在窗口模式下重试。", true);
+            };
             var contents = new Grid();
             contents.Children.Add(field);
             contents.Children.Add(units);
@@ -569,6 +551,7 @@ namespace GlassClicker
             : base(hotkey ? "设置快捷键" : "录制连点动作", 340, hotkey ? 175 : 195, true)
         {
             Owner = owner;
+            if (owner != null) Topmost = owner.Topmost;
             this.hotkey = hotkey;
             var root = Glass.Card(new Thickness(14));
             root.Focusable = true;

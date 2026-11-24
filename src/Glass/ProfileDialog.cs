@@ -22,6 +22,7 @@ namespace GlassClicker
                 108 + (save ? 39 : 23) + (names.Length == 0 ? 0 : 10 + Math.Min(names.Length, 4) * 34), true)
         {
             Owner = owner;
+            if (owner != null) Topmost = owner.Topmost;
             var card = Glass.Card(new Thickness(14));
             Content = card;
             var body = new StackPanel();

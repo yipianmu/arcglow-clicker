@@ -108,66 +108,37 @@ namespace GlassClicker
         private readonly Dispatcher dispatcher;
         private readonly Action<ScreenPoint, int> received;
         private readonly HookProc callback;
-        private readonly bool followDrag;
+        private readonly bool watchRelease;
         private IntPtr hook;
-        private DispatcherOperation queuedMotion;
-        private ScreenPoint latestMotion;
-        public bool MotionIsQueued { get { return queuedMotion != null; } }
         public ScreenPoint? DragReleasePoint { get; private set; }
         public bool Available { get { return hook != IntPtr.Zero; } }
 
-        public MousePressWatch(Dispatcher dispatcher, Action<ScreenPoint, int> received, bool followDrag = false)
+        public MousePressWatch(Dispatcher dispatcher, Action<ScreenPoint, int> received, bool watchRelease = false)
         {
             this.dispatcher = dispatcher;
             this.received = received;
-            this.followDrag = followDrag;
+            this.watchRelease = watchRelease;
             callback = HandleMouse;
             hook = SetWindowsHookEx(14, callback, GetModuleHandle(null), 0);
         }
 
         private IntPtr HandleMouse(int code, IntPtr message, IntPtr data)
         {
-            var button = message.ToInt32();
-            if (code >= 0 && (followDrag ? button == 0x0200 || button == 0x0202 :
-                button == 0x0201 || button == 0x0204 || button == 0x0207 || button == 0x020b))
-            {
-                var point = new ScreenPoint(Marshal.ReadInt32(data), Marshal.ReadInt32(data, sizeof(int)));
-                QueuePointer(point, button);
-            }
+            if (code >= 0) ObserveMouse(message.ToInt32(), data);
             return CallNextHookEx(hook, code, message, data);
         }
 
-        private void QueuePointer(ScreenPoint point, int button)
+        private void ObserveMouse(int button, IntPtr data)
         {
-            if (DragReleasePoint.HasValue) return;
-            if (button == 0x0200)
-            {
-                latestMotion = point;
-                if (queuedMotion == null) queuedMotion = dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
-                {
-                    queuedMotion = null;
-                    if (Available && !DragReleasePoint.HasValue) received(latestMotion, 0x0200);
-                }));
-                return;
-            }
-            if (button == 0x0202)
-            {
-                DragReleasePoint = point;
-                DropQueuedMotion();
-            }
+            if (DragReleasePoint.HasValue || !(watchRelease ? button == 0x0202 :
+                button == 0x0201 || button == 0x0204 || button == 0x0207 || button == 0x020b)) return;
+            var point = new ScreenPoint(Marshal.ReadInt32(data), Marshal.ReadInt32(data, sizeof(int)));
+            if (watchRelease) DragReleasePoint = point;
             dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() => { if (Available) received(point, button); }));
-        }
-
-        private void DropQueuedMotion()
-        {
-            if (queuedMotion == null) return;
-            queuedMotion.Abort();
-            queuedMotion = null;
         }
 
         public void Dispose()
         {
-            DropQueuedMotion();
             if (hook == IntPtr.Zero) return;
             UnhookWindowsHookEx(hook);
             hook = IntPtr.Zero;

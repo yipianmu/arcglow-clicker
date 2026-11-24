@@ -50,6 +50,8 @@ namespace GlassClicker
         {
             if (colors.Length == 1) yield return new RimBand(0, 1, colors[0]);
             if (colors.Length < 2) yield break;
+            // The perimeter runs clockwise from the top. The first task stays on the left.
+            if (colors.Length == 2) colors = new[] { colors[1], colors[0] };
             var share = 1.0 / colors.Length;
             var feather = Math.Min(.048, share * .22);
             const int steps = 5;
@@ -307,16 +309,23 @@ namespace GlassClicker
             var scale = target.RenderTransform as ScaleTransform;
             if (scale == null) { scale = new ScaleTransform(1, 1); target.RenderTransform = scale; }
             target.RenderTransformOrigin = new Point(fromRight ? .8 : .2, .18);
-            var length = TimeSpan.FromMilliseconds(show ? 330 : 195);
-            var fade = new DoubleAnimation(show ? .16 : target.Opacity, show ? 1 : 0,
-                show ? TimeSpan.FromMilliseconds(205) : length)
-                { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
-            if (completed != null) fade.Completed += (sender, args) => completed();
-            target.BeginAnimation(UIElement.OpacityProperty, fade);
-            var size = new DoubleAnimation(show ? .88 : scale.ScaleX, show ? 1 : .90, length);
+            var length = TimeSpan.FromMilliseconds(show ? 300 : 195);
+            if (show)
+            {
+                target.BeginAnimation(UIElement.OpacityProperty, null);
+                target.Opacity = 1;
+            }
+            else
+            {
+                var fade = new DoubleAnimation(target.Opacity, 0, length)
+                    { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
+                target.BeginAnimation(UIElement.OpacityProperty, fade);
+            }
+            var size = new DoubleAnimation(show ? .91 : scale.ScaleX, show ? 1 : .90, length);
             size.EasingFunction = show ? (IEasingFunction)new SpringEase { EasingMode = EasingMode.EaseIn } :
                 new QuadraticEase { EasingMode = EasingMode.EaseInOut };
             scale.BeginAnimation(ScaleTransform.ScaleXProperty, size);
+            if (completed != null) size.Completed += (sender, args) => completed();
             scale.BeginAnimation(ScaleTransform.ScaleYProperty, size);
         }
 
@@ -338,9 +347,17 @@ namespace GlassClicker
     {
         private readonly bool interactive;
         private bool protectFocus;
+        private IntPtr hwnd;
         public bool FocusProtected { get { return protectFocus; } }
         public bool FullscreenOverlay { get; set; }
-        public IntPtr Hwnd { get { return new WindowInteropHelper(this).EnsureHandle(); } }
+        public IntPtr Hwnd
+        {
+            get
+            {
+                if (hwnd == IntPtr.Zero) hwnd = new WindowInteropHelper(this).EnsureHandle();
+                return hwnd;
+            }
+        }
         public ScreenPoint Position
         {
             get { Windows.Rectangle r; return Windows.GetWindowRect(Hwnd, out r) ? new ScreenPoint(r.Left, r.Top) : new ScreenPoint(0, 0); }
@@ -364,10 +381,12 @@ namespace GlassClicker
             FontFamily = Glass.Font;
             SourceInitialized += (sender, args) =>
             {
+                hwnd = new WindowInteropHelper(this).Handle;
                 Windows.AddStyle(Hwnd, Windows.ToolWindow | (clickThrough ? Windows.ClickThrough : 0));
                 Windows.SetNoActivate(Hwnd, !this.interactive || protectFocus);
                 HwndSource.FromHwnd(Hwnd).AddHook(MouseActivate);
             };
+            Closed += (sender, args) => hwnd = IntPtr.Zero;
         }
 
         public void ProtectFocus(bool value)
@@ -419,15 +438,14 @@ namespace GlassClicker
                 var x = cursor.X - grab.X;
                 var y = cursor.Y - grab.Y;
                 Move(new ScreenPoint(origin.X + x, origin.Y + y));
-                if (displaced != null) displaced(Position);
-            }, (point, moved) => { }, threshold: 4);
+            }, (point, moved) => { if (moved && displaced != null) displaced(Position); }, threshold: 4);
         }
     }
 
     internal sealed class GlassOrb : GlassWindow
     {
-        internal const int RingCapacity = 6;
-        private const double FullInnerRing = 61, SecondRing = 82, RingThickness = 16;
+        internal const int InnerCapacity = 4, SecondCapacity = 5;
+        private const double SecondRing = 76, ThirdRing = 102, RingThickness = 16;
         private static readonly Brush CollectorInk = Glass.IconBrush("#3983EA", "#D866A8", "#7961DF");
         private static readonly Brush AddInk = Glass.IconBrush("#2898E0", "#E272A9", "#7359DF");
         private static readonly DoubleAnimation AddPulse = CreateAddPulse();
@@ -563,26 +581,34 @@ namespace GlassClicker
             Glass.Hint(sphere, colors.Length == 0 ? description : null);
             bands.Children.Clear();
             processBadges.Clear();
-            var innerCount = Math.Min(colors.Length, RingCapacity);
-            var innerRadius = innerCount <= 3 ? 44 : innerCount == 4 ? 50 : FullInnerRing;
-            orbitRadius = colors.Length == 0 ? 0 : colors.Length <= RingCapacity ? innerRadius : SecondRing;
+            var innerCount = Math.Min(colors.Length, InnerCapacity);
+            var secondCount = Math.Min(colors.Length - innerCount, SecondCapacity);
+            var thirdCount = colors.Length - innerCount - secondCount;
+            var innerRadius = innerCount < InnerCapacity ? 44 : 52;
+            orbitRadius = thirdCount > 0 ? ThirdRing : secondCount > 0 ? SecondRing : innerCount > 0 ? innerRadius : 0;
             var diameterWithRing = 2 * (orbitRadius + RingThickness / 2 + 4);
             Width = colors.Length == 0 ? 160 : diameterWithRing;
             Height = colors.Length == 0 ? 118 : diameterWithRing;
             sphere.Margin = new Thickness(0, CenterY - diameter / 2, 0, 0);
             caption.Visibility = colors.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-            for (var i = 0; i < colors.Length; i++)
+            AddRing(colors, 0, innerCount, innerCount, innerRadius, innerCount == InnerCapacity);
+            AddRing(colors, innerCount, secondCount, SecondCapacity, SecondRing, false);
+            AddRing(colors, innerCount + secondCount, thirdCount,
+                LayoutFile.MaxJobs - InnerCapacity - SecondCapacity, ThirdRing, false);
+        }
+
+        private void AddRing(int[] colors, int first, int count, int slots, double radius, bool stagger)
+        {
+            if (count == 0) return;
+            var step = 2 * Math.PI / slots;
+            var phase = stagger ? step / 2 : 0;
+            var halfArc = Math.Min(1.37, step / 2 - (RingThickness / 2 + 2.5) / radius);
+            var center = new Point(Width / 2, CenterY);
+            for (var i = 0; i < count; i++)
             {
-                var index = i;
-                var outer = i >= RingCapacity;
-                var slots = outer ? RingCapacity : innerCount;
-                var step = 2 * Math.PI / slots;
-                var phase = outer || slots == 4 ? step / 2 : 0;
-                var angle = -Math.PI / 2 + phase + step * (outer ? i - RingCapacity : i);
-                var radius = outer ? SecondRing : innerRadius;
-                // The rounded ends share the same gap with the neighboring arcs.
-                var halfArc = Math.Min(1.37, step / 2 - (RingThickness / 2 + 2.5) / radius);
-                var item = new OrbBadge(new Point(Width / 2, CenterY), radius, angle, halfArc, RingThickness, Palette.Get(colors[i]).Marker)
+                var index = first + i;
+                var angle = -Math.PI / 2 + phase + step * i;
+                var item = new OrbBadge(center, radius, angle, halfArc, RingThickness, Palette.Get(colors[index]).Marker)
                 {
                     Width = Width, Height = Height
                 };
@@ -632,7 +658,7 @@ namespace GlassClicker
             if (badge != null)
             {
                 badge.Display(action, count, PhaseInk(phase));
-                Glass.Hint(badge, detail);
+                Glass.Hint(badge, detail == null ? action + count : action + " · " + detail);
             }
             if (target.Text != window) { target.Text = window; Glass.Hint(caption, window); }
         }
@@ -691,12 +717,14 @@ namespace GlassClicker
             groupedRim.Source = new DrawingImage(artwork);
         }
 
-        public void DisplayProcess(int index, string action, string count, string window, RunPhase phase, string detail = null)
+        public void DisplayProcess(int index, string action, string count, string window, RunPhase phase, string detail = null,
+            bool selected = false)
         {
             if (index >= processBadges.Count) return;
             var item = processBadges[index];
             item.Display(action, count, PhaseInk(phase));
-            Glass.Hint(item, detail ?? window);
+            item.Select(selected);
+            Glass.Hint(item, action + " · " + (detail ?? window));
         }
 
         private static Brush PhaseInk(RunPhase phase)
@@ -709,14 +737,17 @@ namespace GlassClicker
 
     internal sealed class OrbBadge : FrameworkElement
     {
-        private readonly Pen pill, rim, hover;
+        private readonly Pen pill, rim, hover, selection;
         private readonly Geometry arc, hitArea;
         private readonly Typeface typeface = new Typeface(Glass.Font, FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
         private readonly Point center;
         private readonly double radius, angle, direction, textBudget;
         private readonly Brush marker;
+        private readonly Dictionary<string, FormattedText> glyphCache = new Dictionary<string, FormattedText>();
+        private double pixelsPerDip;
         private string action = "", count = "";
         private Brush ink = Glass.Ink;
+        private bool selected;
         public Action Clicked;
 
         public OrbBadge(Point center, double radius, double angle, double halfArc, double thickness, Brush marker = null)
@@ -730,6 +761,7 @@ namespace GlassClicker
             pill = RoundedPen(Glass.White, thickness);
             rim = RoundedPen(Glass.MutedLine, thickness + 1.2);
             hover = RoundedPen(Glass.Fill("#B8C7DC"), thickness + 1.8);
+            selection = marker == null ? rim : RoundedPen(marker, thickness + 1.8);
             var curve = new StreamGeometry();
             using (var figure = curve.Open())
             {
@@ -769,7 +801,11 @@ namespace GlassClicker
             if (action == value && count == suffix && ink == color) return;
             action = value;
             count = suffix;
-            ink = color;
+            if (ink != color)
+            {
+                ink = color;
+                glyphCache.Clear();
+            }
             System.Windows.Automation.AutomationProperties.SetName(this, action + (count.Length == 0 ? "" : "，" + count));
             InvalidateVisual();
         }
@@ -781,6 +817,13 @@ namespace GlassClicker
             return pen;
         }
 
+        public void Select(bool value)
+        {
+            if (selected == value) return;
+            selected = value;
+            InvalidateVisual();
+        }
+
         private Point PointAt(double radians)
         {
             return new Point(center.X + radius * Math.Cos(radians), center.Y + radius * Math.Sin(radians));
@@ -789,10 +832,20 @@ namespace GlassClicker
         protected override void OnRender(DrawingContext drawing)
         {
             if (String.IsNullOrEmpty(action)) return;
+            var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+            if (pixelsPerDip != dpi)
+            {
+                pixelsPerDip = dpi;
+                glyphCache.Clear();
+            }
             var glyphs = new List<FormattedText>();
             var markerWidth = marker == null ? 0 : 8;
             double textWidth = markerWidth;
-            var remaining = textBudget - Format(count).WidthIncludingTrailingWhitespace;
+            var suffix = StringInfo.GetTextElementEnumerator(count);
+            var suffixGlyphs = new List<FormattedText>();
+            while (suffix.MoveNext()) suffixGlyphs.Add(Format(suffix.GetTextElement()));
+            var suffixWidth = suffixGlyphs.Sum(glyph => glyph.WidthIncludingTrailingWhitespace);
+            var remaining = textBudget - suffixWidth;
             var ellipsis = Format("…");
             var letters = StringInfo.GetTextElementEnumerator(action);
             while (letters.MoveNext())
@@ -803,20 +856,19 @@ namespace GlassClicker
                 var reserve = letters.ElementIndex + letter.Length == action.Length ? 0 : ellipsis.WidthIncludingTrailingWhitespace;
                 if (textWidth + advance + reserve > remaining)
                 {
-                    glyphs.Add(ellipsis);
-                    textWidth += ellipsis.WidthIncludingTrailingWhitespace;
+                    if (textWidth + ellipsis.WidthIncludingTrailingWhitespace <= remaining)
+                    {
+                        glyphs.Add(ellipsis);
+                        textWidth += ellipsis.WidthIncludingTrailingWhitespace;
+                    }
                     break;
                 }
                 glyphs.Add(glyph);
                 textWidth += advance;
             }
-            foreach (var letter in count)
-            {
-                var glyph = Format(letter.ToString());
-                glyphs.Add(glyph);
-                textWidth += glyph.WidthIncludingTrailingWhitespace;
-            }
-            drawing.DrawGeometry(null, IsMouseOver ? hover : rim, arc);
+            glyphs.AddRange(suffixGlyphs);
+            textWidth += suffixWidth;
+            drawing.DrawGeometry(null, selected ? selection : IsMouseOver ? hover : rim, arc);
             drawing.DrawGeometry(null, pill, arc);
             var offset = -textWidth / 2;
             if (marker != null)
@@ -838,8 +890,13 @@ namespace GlassClicker
 
         private FormattedText Format(string value)
         {
-            return new FormattedText(value, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, typeface, 9.5, ink,
-                VisualTreeHelper.GetDpi(this).PixelsPerDip);
+            FormattedText glyph;
+            if (glyphCache.TryGetValue(value, out glyph)) return glyph;
+            if (glyphCache.Count == 64) glyphCache.Clear();
+            glyph = new FormattedText(value, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
+                typeface, 9.5, ink, pixelsPerDip);
+            glyphCache.Add(value, glyph);
+            return glyph;
         }
     }
 
@@ -880,8 +937,10 @@ namespace GlassClicker
 
         public void Follow(ScreenPoint point)
         {
+            var dpi = Windows.Dpi(Hwnd);
             var start = At(point);
             Move(start, false);
+            if (Windows.Dpi(Hwnd) == dpi) return;
             var corrected = At(point);
             if (corrected.X != start.X || corrected.Y != start.Y) Move(corrected, false);
         }

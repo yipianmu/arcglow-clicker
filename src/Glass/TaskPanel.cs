@@ -176,7 +176,7 @@ namespace GlassClicker
 
         public void Refresh()
         {
-            targetName.Text = task.Target == null ? "未选择" : task.Target.ShortName;
+            targetName.Text = task.Target == null ? "未选择" : task.Target.Name;
             Glass.Hint(targetName, task.Target == null ? null : task.Target.Name);
             tracking.Content = task.Tracking ? "取消选择" : FullscreenOverlay ? "用全屏窗口" :
                 task.Target == null ? "选择窗口" : task.Target.Window == IntPtr.Zero ? "重新选窗" : "更换窗口";

@@ -1,6 +1,7 @@
 using System;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 
 namespace GlassClicker
 {
@@ -13,7 +14,10 @@ namespace GlassClicker
         private readonly int threshold;
         private MousePressWatch watch;
         private ScreenPoint origin, last;
+        private TimeSpan lastFrame;
         private bool moved;
+        private static int activeCount;
+        public static bool InProgress { get { return activeCount != 0; } }
         public bool IsActive { get; private set; }
 
         public PointerDrag(FrameworkElement grip, Func<MouseButtonEventArgs, ScreenPoint, bool> start,
@@ -27,13 +31,12 @@ namespace GlassClicker
                 origin = last = point;
                 moved = false;
                 IsActive = true;
-                watch = new MousePressWatch(grip.Dispatcher, OnPointer, true);
+                activeCount++;
+                watch = new MousePressWatch(grip.Dispatcher, (cursor, message) => Finish(cursor), true);
                 if (!grip.CaptureMouse() && !watch.Available) { Cancel(); return; }
+                lastFrame = TimeSpan.MinValue;
+                CompositionTarget.Rendering += FollowFrame;
                 args.Handled = true;
-            };
-            grip.PreviewMouseMove += (sender, args) =>
-            {
-                if (args.LeftButton == MouseButtonState.Pressed && (watch == null || !watch.MotionIsQueued)) Travel(Windows.Cursor());
             };
             grip.PreviewMouseLeftButtonUp += (sender, args) =>
             {
@@ -43,12 +46,15 @@ namespace GlassClicker
             };
             grip.LostMouseCapture += (sender, args) => { if (watch == null || !watch.Available) Cancel(); };
             grip.IsVisibleChanged += (sender, args) => { if (!grip.IsVisible) Cancel(); };
+            grip.Unloaded += (sender, args) => Cancel();
         }
 
-        private void OnPointer(ScreenPoint point, int message)
+        private void FollowFrame(object sender, EventArgs args)
         {
-            if (message == 0x0200) Travel(point);
-            else if (message == 0x0202) Finish(point);
+            var frame = ((RenderingEventArgs)args).RenderingTime;
+            if (!IsActive || lastFrame == frame || (watch != null && watch.DragReleasePoint.HasValue)) return;
+            lastFrame = frame;
+            Travel(Windows.Cursor());
         }
 
         private void Travel(ScreenPoint point)
@@ -77,6 +83,8 @@ namespace GlassClicker
         private void Reset()
         {
             IsActive = false;
+            activeCount--;
+            CompositionTarget.Rendering -= FollowFrame;
             if (watch != null) watch.Dispose();
             watch = null;
             if (grip.IsMouseCaptured) grip.ReleaseMouseCapture();

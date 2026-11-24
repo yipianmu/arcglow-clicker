@@ -101,9 +101,8 @@ namespace GlassClicker
         internal static bool IsMinecraft(string windowClass, string title)
         {
             return windowClass.StartsWith("GLFW", StringComparison.OrdinalIgnoreCase) &&
-                (title.StartsWith("Minecraft", StringComparison.OrdinalIgnoreCase) ||
-                title.StartsWith("我的世界", StringComparison.Ordinal) ||
-                title.IndexOf("朽木呓语", StringComparison.Ordinal) >= 0);
+                (title.IndexOf("Minecraft", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 title.IndexOf("我的世界", StringComparison.Ordinal) >= 0);
         }
 
         internal static IntPtr RecognizeGameWindow(IntPtr foreground)
@@ -431,18 +430,6 @@ namespace GlassClicker
             }
         }
 
-        public string ShortName
-        {
-            get { return ShortenTitle(Name); }
-        }
-
-        public string ShortenTitle(string name)
-        {
-            const string modpack = "朽木呓语";
-            return identityClass.StartsWith("GLFW", StringComparison.OrdinalIgnoreCase) &&
-                name.IndexOf(modpack, StringComparison.Ordinal) >= 0 ? modpack : name;
-        }
-
         public static TargetBinding Create(IntPtr window, ScreenPoint? screen = null)
         {
             if (!Windows.Eligible(window, true)) return null;
@@ -462,10 +449,7 @@ namespace GlassClicker
 
         public TargetBinding ReconnectGame(IntPtr window)
         {
-            const string modpack = "朽木呓语";
             if (!RemembersGame || !Windows.Eligible(window) || !Windows.IsMinecraft(window)) return null;
-            var oldModpack = identityTitle.IndexOf(modpack, StringComparison.Ordinal) >= 0;
-            if (oldModpack != (Windows.Title(window).IndexOf(modpack, StringComparison.Ordinal) >= 0)) return null;
             var candidate = new Handle(window);
             return candidate.IsCurrent ? new TargetBinding(candidate, X, Y, HasAnchor) : null;
         }

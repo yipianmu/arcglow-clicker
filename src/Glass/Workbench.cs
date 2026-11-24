@@ -113,7 +113,7 @@ namespace GlassClicker
         private ClickTask locatorTask;
         private bool drawingLocator;
         private ScreenPoint? pendingLocatorPoint;
-        private IntPtr pointedWindow;
+        private IntPtr pointedWindow, previewCandidate;
         private ClickTask tracking;
         private MousePressWatch targetPicker;
         private IntPtr lastForeground;
@@ -140,7 +140,8 @@ namespace GlassClicker
         private bool outlineDirty = true, outlineQueued, editingPauseQueued;
         private string profileName;
         private ProfileDialog profileBrowser;
-        private DispatcherTimer runProof;
+        private readonly List<Motion> movedThisFrame = new List<Motion>();
+        private readonly List<Action> finishedThisFrame = new List<Action>();
 
         public string ShortcutText { get { return shortcut.Text; } }
         public bool ShortcutAvailable { get { return keyRegistered; } }
@@ -153,6 +154,7 @@ namespace GlassClicker
         public bool RememberPanelPosition { get { return preferences.RememberPanelPosition; } }
         public int OutlineStrength { get { return preferences.OutlineStrength; } }
         private bool Running { get { return tasks.Any(CountsAsGroupOutput); } }
+        private bool Collected { get { return tasks.Count > 1 && !expanded; } }
 
         private static bool CountsAsGroupOutput(ClickTask task)
         {
@@ -164,75 +166,8 @@ namespace GlassClicker
         private static void Main(string[] args)
         {
             var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-            var scheduled = args.Length == 4 && args[0] == "--start-minecraft";
-            string preset = args.Length == 1 ? args[0] : null;
-            if (scheduled)
-            {
-                preset = args[3];
-                try { MakeMinecraftProfile(preset, args[1], args[2]); }
-                catch (Exception error)
-                {
-                    File.WriteAllText(preset + ".status", error.Message);
-                    Environment.ExitCode = 1;
-                    return;
-                }
-            }
-            using (var workbench = new Workbench(app, preset))
-            {
-                if (scheduled) app.Dispatcher.BeginInvoke(new Action(() => workbench.StartScheduled(preset + ".status")));
-                app.Run();
-            }
-        }
-
-        private static void MakeMinecraftProfile(string file, string left, string right)
-        {
-            var requested = new[] { UInt32.Parse(left), UInt32.Parse(right) };
-            if (requested[0] == requested[1]) throw new ArgumentException("需要两个不同的客户端进程。");
-            var jobs = new List<SavedJob>();
-            foreach (var pid in requested)
-            {
-                var target = FindMinecraftTarget(pid);
-                jobs.Add(new SavedJob { Action = "K", Infinite = true, Interval = 1000, Delay = jobs.Count * 500,
-                    Count = 100, Color = jobs.Count, Left = 850 - jobs.Count * 135, Top = 525, Target = target.Export() });
-            }
-            LayoutFile.Write(file, new SavedLayout { Version = 1, Shortcut = "F8", HubLeft = 1000, HubTop = 525, Jobs = jobs });
-        }
-
-        private static TargetBinding FindMinecraftTarget(uint pid)
-        {
-            var wait = Stopwatch.StartNew();
-            do
-            {
-                var games = Windows.TopWindows().Where(hwnd =>
-                {
-                    uint owner;
-                    return Windows.Thread(hwnd, out owner) != 0 && owner == pid && Windows.Eligible(hwnd) &&
-                        Windows.IsMinecraft(hwnd);
-                }).Take(2).ToArray();
-                if (games.Length > 1) break;
-                var target = games.Length == 1 ? TargetBinding.Create(games[0]) : null;
-                if (target != null) return target;
-                System.Threading.Thread.Sleep(200);
-            } while (wait.Elapsed < TimeSpan.FromSeconds(12));
-            throw new InvalidOperationException("没有找到进程 " + pid + " 的唯一游戏窗口。");
-        }
-
-        private void StartScheduled(string proof)
-        {
-            if (tasks.Count != 2 || tasks.Any(task => task.Target == null || task.Target.Window == IntPtr.Zero))
-            {
-                File.WriteAllText(proof, "两个已验证的游戏窗口未同时就绪。");
-                return;
-            }
-            Start(tasks.ToArray());
-            runProof = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(5) };
-            runProof.Tick += (sender, args) =>
-            {
-                var samples = tasks.Select(task => task.Worker.State).ToArray();
-                File.WriteAllLines(proof, samples.Select(reading => reading.Phase + " " + reading.Count));
-                if (samples.All(reading => !reading.Running)) runProof.Stop();
-            };
-            runProof.Start();
+            var preset = args.Length == 1 ? args[0] : null;
+            using (var workbench = new Workbench(app, preset)) app.Run();
         }
 
         private Workbench(Application app, string preset)
@@ -301,6 +236,7 @@ namespace GlassClicker
             settingsSaveTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(250) };
             settingsSaveTimer.Tick += (sender, args) =>
             {
+                if (PointerDrag.InProgress) return;
                 var error = SaveSettings();
                 if (error != null) ConfigurationNotice(settingsDialog, error);
             };
@@ -607,7 +543,7 @@ namespace GlassClicker
                 if (replacement != null)
                 {
                     SetTarget(task, replacement);
-                    Report("已接回 " + replacement.ShortName);
+                    Report("已接回 " + replacement.Name);
                     return;
                 }
             }
@@ -665,6 +601,8 @@ namespace GlassClicker
         public void AddTask()
         {
             if (tasks.Count >= LayoutFile.MaxJobs) { Report("最多可同时配置 12 枚连点。", true); return; }
+            FinishPacking();
+            var wasCollected = Collected;
             if (tasks.Count == 1)
             {
                 var first = tasks[0];
@@ -676,10 +614,11 @@ namespace GlassClicker
                 .OrderBy(i => removedTask != null && i == removedTask.Color).First();
             if (removedTask != null && color == removedTask.Color) ForgetRemoval();
             var next = MakeTask(null, tasks.Count, color);
-            expanded = tasks.Count > 1;
-            hub.Hide();
+            expanded = tasks.Count > 1 && !wasCollected;
+            if (wasCollected) ShowOrbs();
+            else hub.Hide();
             ShowEditor(next);
-            mergeAfterEditor = next;
+            mergeAfterEditor = expanded ? next : null;
             RememberCurrentLayout();
         }
 
@@ -822,7 +761,7 @@ namespace GlassClicker
             var statusPosition = status != null ? (ScreenPoint?)status.Position : null;
             tasks.Insert(Math.Min(removedIndex, tasks.Count), task);
             retiring.Remove(task.Worker);
-            if (tasks.Count > 1 && !expanded)
+            if (statusPosition.HasValue && Collected)
             {
                 Spread(panel == null ? null : panel.Task);
             }
@@ -859,6 +798,7 @@ namespace GlassClicker
         private void RevealTasks()
         {
             if (hidden || packing) return;
+            if (Collected) CloseEditor(true);
             Spread(null);
             OpenStatus(hub);
         }
@@ -895,8 +835,8 @@ namespace GlassClicker
             CloseEditor(true);
             mergeAfterEditor = null;
             CloseStatus();
-            if (editing != null) ShowFolded(editing);
-            if (tasks.Count < 2 || !expanded) return;
+            if (editing != null && !Collected) ShowFolded(editing);
+            if (!expanded) { RefreshLabels(); return; }
 
             Touch();
             expanded = false;
@@ -947,6 +887,7 @@ namespace GlassClicker
         {
             if (hidden || !tasks.Contains(task)) return;
             Touch();
+            if (Collected) { RefreshLabels(); return; }
             var orb = task.Orb;
             var duration = origin.HasValue ? 370 : 230;
             CancelMotion(orb);
@@ -986,18 +927,18 @@ namespace GlassClicker
                 panel.RaiseWithoutFocus();
                 return;
             }
-            var anchor = task.Orb.IsVisible ? task.Orb : hub.IsVisible ? hub : task.Orb;
-            var anchorPosition = anchor.IsVisible ? anchor.Position : task.Home;
+            var collected = Collected;
+            var anchor = collected ? hub : task.Orb;
+            var anchorPosition = anchor.IsVisible ? anchor.Position : collected ? HubPosition() : task.Home;
             var recognized = task.Target == null ? TargetBinding.Create(Windows.RecognizeGameWindow(Windows.ForegroundTarget())) : null;
             if (recognized != null) SetTarget(task, recognized);
             var previous = panel == null ? null : panel.Task;
             CloseEditor(false);
-            if (previous != null) ShowFolded(previous);
+            if (previous != null && !collected) ShowFolded(previous);
             if (mergeAfterEditor != task) mergeAfterEditor = null;
-            if (!expanded && tasks.Count > 1) Spread(task);
             CancelMotion(task.Orb);
             task.Orb.Hide();
-            hub.Hide();
+            if (!collected) hub.Hide();
             var editor = new TaskPanel(this, task);
             editor.ProtectFocus(true);
             editor.FullscreenOverlay = fullscreen != IntPtr.Zero;
@@ -1017,7 +958,7 @@ namespace GlassClicker
             Glass.Animate(editor.Card, true, editor.Position.X < anchorPosition.X);
             QueueOutlineLayout();
             if (!keyRegistered) editor.ShowMessage(shortcut.Text + " 正被占用", true);
-            else if (recognized != null) editor.ShowMessage("已识别 " + recognized.ShortName);
+            else if (recognized != null) editor.ShowMessage("已识别 " + recognized.Name);
             RefreshLabels();
         }
 
@@ -1110,7 +1051,7 @@ namespace GlassClicker
             {
                 SetTarget(task, target);
                 if (!hasEditor) ShowEditor(task);
-                Report("已切换到 " + target.ShortName);
+                Report("已切换到 " + target.Name);
             }
             else if (hasEditor) Report("请把准星放在目标窗口的内容里。", true);
             if (!hasEditor) CloseLocator();
@@ -1137,16 +1078,25 @@ namespace GlassClicker
 
         private void RefreshLocatorPreview()
         {
-            locatorPreview.Stop();
             var point = pendingLocatorPoint;
-            pendingLocatorPoint = null;
-            if (point.HasValue && locator != null && OutlineStrength != 0) PointLocatorAt(Windows.TargetAt(point.Value));
+            if (!point.HasValue || locator == null || OutlineStrength == 0) { ClearLocatorPreview(); return; }
+            var candidate = Windows.TargetAt(point.Value);
+            if (candidate != pointedWindow && candidate != previewCandidate)
+            {
+                previewCandidate = candidate;
+                return;
+            }
+            locatorPreview.Stop();
+            if (candidate == pointedWindow) return;
+            PointLocatorAt(candidate);
+            if (PointerDrag.InProgress) UpdateOutlines();
         }
 
         private void ClearLocatorPreview()
         {
             locatorPreview.Stop();
             pendingLocatorPoint = null;
+            previewCandidate = IntPtr.Zero;
             PointLocatorAt(IntPtr.Zero);
         }
 
@@ -1311,7 +1261,7 @@ namespace GlassClicker
         private void ToggleStatus(GlassOrb orb)
         {
             if (status != null) { CloseStatus(); Touch(); return; }
-            if (orb == hub) RevealTasks();
+            if (orb == hub || Collected) RevealTasks();
             else OpenStatus(orb);
         }
 
@@ -1433,7 +1383,7 @@ namespace GlassClicker
             hidden = false;
             hiddenEditor = null; hiddenEditorPosition = null; hiddenStatusAnchor = null;
             hiddenStatusPosition = null; hiddenWasExpanded = false;
-            if (!packing && (tasks.Count == 0 || tasks.Count > 1 && !expanded))
+            if (!packing && (tasks.Count == 0 || Collected))
             {
                 foreach (var task in tasks) task.Orb.Hide();
                 hub.SetProcesses(tasks.Select(task => task.Color).ToArray());
@@ -1553,7 +1503,7 @@ namespace GlassClicker
             preferences.OutlineStrength = strength;
             if (strength == 0) { ClearLocatorPreview(); ClearOutlines(); }
             else QueueOutlineLayout();
-            RefreshLabels();
+            if (!PointerDrag.InProgress) RefreshLabels();
             settingsSaveTimer.Stop();
             settingsSaveTimer.Start();
         }
@@ -1723,6 +1673,8 @@ namespace GlassClicker
 
         private void Tick()
         {
+            // While a pointer is captured, preview changes are handled by the locator timer.
+            if (PointerDrag.InProgress) return;
             var now = clock.ElapsedMilliseconds;
             if (saveAt != 0 && now >= saveAt) RememberCurrentLayout();
             if (undoToast != null && now >= undoUntil && !undoToast.IsMouseOver) ForgetRemoval();
@@ -1785,6 +1737,8 @@ namespace GlassClicker
             if (frame == lastFrame) return;
             lastFrame = frame;
             var now = clock.Elapsed.TotalMilliseconds;
+            movedThisFrame.Clear();
+            finishedThisFrame.Clear();
             for (var i = motions.Count - 1; i >= 0; i--)
             {
                 var motion = motions[i];
@@ -1794,24 +1748,41 @@ namespace GlassClicker
                     motion.From.Y + (int)Math.Round((motion.To.Y - motion.From.Y) * move));
                 if (point.X != motion.Last.X || point.Y != motion.Last.Y)
                 {
-                    motion.Window.Move(point, false);
                     motion.Last = point;
+                    movedThisFrame.Add(motion);
                 }
                 if (motion.Visual != null) motion.Visual(portion);
                 if (portion < 1) continue;
                 motions.RemoveAt(i);
-                if (motion.Done != null) motion.Done();
+                if (motion.Done != null) finishedThisFrame.Add(motion.Done);
             }
+            MoveAnimationWindows();
+            foreach (var finished in finishedThisFrame) finished();
             if (motions.Count == 0) SetRendering(false);
+        }
+
+        private void MoveAnimationWindows()
+        {
+            if (movedThisFrame.Count > 1)
+            {
+                var batch = Windows.BeginDeferWindowPos(movedThisFrame.Count);
+                foreach (var motion in movedThisFrame)
+                {
+                    if (batch == IntPtr.Zero) break;
+                    batch = Windows.DeferWindowPos(batch, motion.Window.Hwnd, IntPtr.Zero, motion.Last.X,
+                        motion.Last.Y, 0, 0, Windows.KeepOrder | 1);
+                }
+                if (batch != IntPtr.Zero && Windows.EndDeferWindowPos(batch)) return;
+            }
+            foreach (var motion in movedThisFrame) motion.Window.Move(motion.Last, false);
         }
 
         private void QueueOutlineLayout()
         {
             outlineDirty = true;
-            if (hidden || disposed || outlineQueued) return;
+            if (hidden || disposed || outlineQueued || PointerDrag.InProgress) return;
             outlineQueued = true;
-            var priority = locator != null && (drawingLocator || locator.Dragging) ? DispatcherPriority.Background : DispatcherPriority.Render;
-            app.Dispatcher.BeginInvoke(priority, new Action(() =>
+            app.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
             {
                 outlineQueued = false;
                 if (outlineDirty && !hidden && !disposed) RefreshOutlineLayout();
@@ -1841,17 +1812,17 @@ namespace GlassClicker
                 var count = state.Holding ? "按住中" : state.Count + " 次";
                 var target = task.OutputTarget;
                 var destination = target == null ? "未绑定窗口" : target.Name;
-                var shortTitle = target == null ? destination : target.ShortenTitle(destination);
                 var orbitCount = state.Holding ? count : CompactCount(state.Count);
                 var detail = destination + " · " + count + (state.Phase == RunPhase.Paused ? " · " + PhaseText(state) : "");
                 var lit = task.OutputActive;
                 if (lit) activeColors.Add(Palette.Get(task.Color).Rim);
                 if (task.Orb.IsVisible)
                 {
-                    task.Orb.Display(keys, " · " + orbitCount, shortTitle, state.Phase, detail);
+                    task.Orb.Display(keys, " · " + orbitCount, destination, state.Phase, detail);
                     task.Orb.ShowOutputLight(lit, OutlineStrength);
                 }
-                if (hub.IsVisible) hub.DisplayProcess(i, keys, " · " + orbitCount, destination, state.Phase, detail);
+                if (hub.IsVisible) hub.DisplayProcess(i, keys, " · " + orbitCount, destination, state.Phase, detail,
+                    panel != null && panel.Task == task);
                 ProcessRow row;
                 if (!processRows.TryGetValue(task, out row)) continue;
                 var summary = keys + " · " + count + (state.Holding ? "" : " · " + PhaseText(state));
@@ -1861,7 +1832,9 @@ namespace GlassClicker
                     row.Target.Text = destination;
                     Glass.Hint(row.Target, destination);
                 }
-                AutomationProperties.SetName(row.Edit, "编辑 " + keys + " · " + destination);
+                var accessibleName = "编辑 " + keys + " · " + destination;
+                if (AutomationProperties.GetName(row.Edit) != accessibleName)
+                    AutomationProperties.SetName(row.Edit, accessibleName);
                 row.Summary.Foreground = state.Phase == RunPhase.Active || state.Phase == RunPhase.Complete ? Glass.Green :
                     state.Phase == RunPhase.Waiting || state.Phase == RunPhase.Delay ? Glass.Gold :
                     state.Phase == RunPhase.Paused ? Glass.Muted : Glass.Ink;
@@ -1886,7 +1859,8 @@ namespace GlassClicker
             if (statusStart != null)
             {
                 statusStart.IsEnabled = Running || tasks.Any(task => !task.Worker.State.HasSession);
-                statusStart.Content = Running ? "停止全部" : statusStart.IsEnabled ? "开始全部" : "全部已暂停";
+                var label = Running ? "停止全部" : statusStart.IsEnabled ? "开始全部" : "全部已暂停";
+                if ((string)statusStart.Content != label) statusStart.Content = label;
             }
             if (panel != null) panel.Refresh();
             if (clock.ElapsedMilliseconds - trayRefresh > 500)
@@ -2096,7 +2070,7 @@ namespace GlassClicker
         {
             if (disposed) return;
             disposed = true;
-            StopAll(); frames.Stop(); locatorPreview.Stop(); SetRendering(false); if (runProof != null) runProof.Stop(); ReleaseShortcut();
+            StopAll(); frames.Stop(); locatorPreview.Stop(); SetRendering(false); ReleaseShortcut();
             if (settingsSaveTimer.IsEnabled) SaveSettings();
             if (emergencyRegistered) UnregisterHotKey(messages.Handle, EmergencyKeyId);
             if (guide != null) guide.Close();

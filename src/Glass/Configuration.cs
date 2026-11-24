@@ -58,6 +58,7 @@ namespace GlassClicker
         public bool PauseOthersWhileEditing { get; set; }
         public bool RememberPanelPosition { get; set; }
         public bool RestoreLayoutOnStart { get; set; }
+        public bool AlwaysOnTop { get; set; }
         public bool InterfaceSounds { get; set; }
         public int? InterfaceSoundVolume { get; set; }
         public int OutlineStrength { get; set; }
@@ -67,6 +68,7 @@ namespace GlassClicker
             EmergencyKey = DefaultEmergencyKey;
             PauseOthersWhileEditing = true;
             RestoreLayoutOnStart = true;
+            AlwaysOnTop = true;
             OutlineStrength = 100;
         }
     }

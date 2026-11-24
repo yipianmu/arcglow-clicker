@@ -347,6 +347,7 @@ namespace GlassClicker
     {
         private readonly bool interactive;
         private bool protectFocus;
+        private ForegroundReturn textForeground;
         private IntPtr hwnd;
         public bool FocusProtected { get { return protectFocus; } }
         public bool FullscreenOverlay { get; set; }
@@ -400,7 +401,50 @@ namespace GlassClicker
                     (args.Key == Key.Delete && field.CaretIndex < field.Text.Length))
                     UiSounds.Key();
             };
-            Closed += (sender, args) => hwnd = IntPtr.Zero;
+            PreviewMouseDown += (sender, args) =>
+            {
+                if (textForeground != null && !InsideTextBox(args.OriginalSource as DependencyObject))
+                    Keyboard.ClearFocus();
+            };
+            LostKeyboardFocus += (sender, args) =>
+            {
+                var next = args.NewFocus as TextBox;
+                if (args.OldFocus is TextBox && (next == null || GetWindow(next) != this)) EndTextFocus();
+            };
+            Deactivated += (sender, args) => EndTextFocus();
+            Closed += (sender, args) => { hwnd = IntPtr.Zero; EndTextFocus(); };
+        }
+
+        private static bool InsideTextBox(DependencyObject element)
+        {
+            for (var target = element; target != null; target = target is Visual
+                ? VisualTreeHelper.GetParent(target) : LogicalTreeHelper.GetParent(target))
+                if (target is TextBox) return true;
+            return false;
+        }
+
+        protected bool FocusTextBox(TextBox field)
+        {
+            if (FullscreenOverlay || Windows.IsFullscreen(Windows.ForegroundTarget())) return false;
+            OverlayInput.End(this, true);
+            textForeground = new ForegroundReturn();
+            ProtectFocus(false);
+            if (Activate() && field.Focus())
+            {
+                field.SelectAll();
+                return true;
+            }
+            EndTextFocus();
+            return false;
+        }
+
+        private void EndTextFocus()
+        {
+            if (textForeground == null) return;
+            var foreground = textForeground;
+            textForeground = null;
+            if (IsVisible) ProtectFocus(true);
+            foreground.Dispose();
         }
 
         public void ProtectFocus(bool value)
@@ -441,7 +485,7 @@ namespace GlassClicker
 
         public void RaiseWithoutFocus()
         {
-            Windows.SetWindowPos(Hwnd, new IntPtr(-1), 0, 0, 0, 0, Windows.Place | 0x0003);
+            Windows.SetWindowPos(Hwnd, Topmost ? new IntPtr(-1) : IntPtr.Zero, 0, 0, 0, 0, Windows.Place | 0x0003);
         }
 
         public void DragBy(FrameworkElement header, Action<ScreenPoint> displaced = null)

@@ -1,6 +1,8 @@
 # 弧光连点器
 
-做了一个 Windows 连点器。一枚小球，管一个窗口。拖一下准星就能绑窗口，几枚球可以各按各的，收起来之后也看得见哪一枚还在跑。
+只是一款简单的连点器
+
+![弧光连点器界面](src/Glass/readme-interface.png)
 
 [下载 v0.1.0 Windows 便携版](https://github.com/yipianmu/arcglow-clicker/releases/download/v0.1.0/ArcGlow-v0.1.0-Portable.exe)
 

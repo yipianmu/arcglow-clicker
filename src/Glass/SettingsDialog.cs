@@ -55,6 +55,21 @@ namespace GlassClicker
             body.Children.Add(files);
 
             Section(body, "外观与调试");
+            var topmost = Glass.Button(host.AlwaysOnTop ? "已开启" : "已关闭", Glass.White,
+                host.AlwaysOnTop ? Glass.Blue : Glass.Muted);
+            AutomationProperties.SetName(topmost, "切换悬浮界面始终置顶");
+            Glass.Hint(topmost, "关闭后，其他窗口可以盖住浮球和面板。点击系统托盘的弧光图标可找回。");
+            topmost.Click += (sender, args) =>
+            {
+                var enabled = !host.AlwaysOnTop;
+                var error = host.ChangeAlwaysOnTop(enabled);
+                topmost.Content = enabled ? "已开启" : "已关闭";
+                topmost.Foreground = enabled ? Glass.Blue : Glass.Muted;
+                Notice(error ?? "", error != null);
+                UiSounds.Click();
+            };
+            body.Children.Add(Row("悬浮界面始终置顶", topmost));
+
             var automaticPause = Glass.Button(host.PauseOthersWhileEditing ? "已开启" : "已关闭", Glass.White,
                 host.PauseOthersWhileEditing ? Glass.Blue : Glass.Muted);
             AutomationProperties.SetName(automaticPause, "切换调试时自动暂停");
@@ -376,17 +391,23 @@ namespace GlassClicker
             tile.BorderThickness = new Thickness(1);
             tile.Height = 32;
             tile.Margin = new Thickness(0, 4, 0, 0);
+            tile.Cursor = Cursors.IBeam;
             field = new TextBox { Text = value.ToString(CultureInfo.InvariantCulture), FontSize = 12, FontFamily = Glass.Font,
                 BorderThickness = new Thickness(0), Background = Brushes.Transparent, Foreground = Glass.Ink,
                 VerticalContentAlignment = VerticalAlignment.Center, MaxLength = 5 };
             AutomationProperties.SetName(field, name);
             var input = field;
-            input.PreviewMouseLeftButtonDown += (sender, args) =>
+            input.IsKeyboardFocusedChanged += (sender, args) =>
+                tile.BorderBrush = input.IsKeyboardFocused ? Glass.Blue : Glass.MutedLine;
+            tile.PreviewMouseLeftButtonDown += (sender, args) =>
             {
                 if (!FocusProtected) return;
                 args.Handled = true;
-                OverlayInput.EditNumber(this, tile, input, explicitEnter => true,
-                    editing => tile.BorderBrush = editing ? Glass.Blue : Glass.MutedLine);
+                if (FocusTextBox(input)) return;
+                if (OverlayInput.Editing(tile)) { input.SelectAll(); return; }
+                if (!OverlayInput.EditNumber(this, tile, input, explicitEnter => true,
+                    editing => tile.BorderBrush = editing ? Glass.Blue : Glass.MutedLine))
+                    Notice("暂时无法输入，请在窗口模式下重试。", true);
             };
             var grid = TaskPanel.Columns(new GridLength(1, GridUnitType.Star), GridLength.Auto);
             Glass.On(grid, field, 0, 0);

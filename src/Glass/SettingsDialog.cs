@@ -74,6 +74,20 @@ namespace GlassClicker
             };
             body.Children.Add(Row("记住拖动后的面板位置", rememberPosition));
 
+            var sound = Glass.Button(host.InterfaceSounds ? "已开启" : "已关闭", Glass.White,
+                host.InterfaceSounds ? Glass.Blue : Glass.Muted);
+            AutomationProperties.SetName(sound, "切换界面音效");
+            Glass.Hint(sound, "播放按钮点击和文本输入反馈。");
+            sound.Click += (sender, args) =>
+            {
+                var enabled = !host.InterfaceSounds;
+                var error = host.ChangeInterfaceSounds(enabled);
+                sound.Content = enabled ? "已开启" : "已关闭";
+                sound.Foreground = enabled ? Glass.Blue : Glass.Muted;
+                Notice(error ?? (enabled ? "界面音效已开启" : "界面音效已关闭"), error != null);
+            };
+            body.Children.Add(Row("界面音效", sound));
+
             if (task != null)
             {
                 Section(body, "此枚连点");

@@ -177,7 +177,11 @@ namespace GlassClicker
         private static void Replace(TextBox field, int start, int size, string replacement)
         {
             if (field.Text.Length - size + replacement.Length > field.MaxLength) return;
-            if (size != 0 || replacement.Length != 0) field.Text = field.Text.Remove(start, size).Insert(start, replacement);
+            if (size != 0 || replacement.Length != 0)
+            {
+                field.Text = field.Text.Remove(start, size).Insert(start, replacement);
+                UiSounds.Key();
+            }
             field.Select(start + replacement.Length, 0);
         }
 

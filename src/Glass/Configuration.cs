@@ -38,17 +38,20 @@ namespace GlassClicker
 
     internal sealed class AppSettings
     {
+        public const string DefaultShortcut = "F10";
         public const string DefaultEmergencyKey = "Ctrl+Shift+F10";
         public bool TutorialSeen { get; set; }
         public string EmergencyKey { get; set; }
         public bool PauseOthersWhileEditing { get; set; }
         public bool RememberPanelPosition { get; set; }
+        public bool InterfaceSounds { get; set; }
         public int OutlineStrength { get; set; }
 
         public AppSettings()
         {
             EmergencyKey = DefaultEmergencyKey;
             PauseOthersWhileEditing = true;
+            InterfaceSounds = true;
             OutlineStrength = 100;
         }
     }

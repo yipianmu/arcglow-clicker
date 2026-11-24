@@ -386,6 +386,20 @@ namespace GlassClicker
                 Windows.SetNoActivate(Hwnd, !this.interactive || protectFocus);
                 HwndSource.FromHwnd(Hwnd).AddHook(MouseActivate);
             };
+            PreviewTextInput += (sender, args) =>
+            {
+                var field = Keyboard.FocusedElement as TextBox;
+                if (field != null && !field.IsReadOnly && !String.IsNullOrEmpty(args.Text) && !Char.IsControl(args.Text, 0))
+                    UiSounds.Key();
+            };
+            PreviewKeyDown += (sender, args) =>
+            {
+                var field = Keyboard.FocusedElement as TextBox;
+                if (field == null || field.IsReadOnly) return;
+                if ((args.Key == Key.Back && (field.SelectionLength > 0 || field.CaretIndex > 0)) ||
+                    (args.Key == Key.Delete && field.CaretIndex < field.Text.Length))
+                    UiSounds.Key();
+            };
             Closed += (sender, args) => hwnd = IntPtr.Zero;
         }
 
@@ -407,12 +421,22 @@ namespace GlassClicker
 
         public void Move(ScreenPoint point, bool clamp = true)
         {
-            if (clamp)
-            {
-                var scale = Scale;
-                point = Glass.Clamp(point, (int)Math.Round(Width * scale), (int)Math.Round(Height * scale));
-            }
+            if (clamp) point = ClampPosition(point);
             Windows.SetWindowPos(Hwnd, IntPtr.Zero, point.X, point.Y, 0, 0, Windows.KeepOrder | 1);
+        }
+
+        private ScreenPoint ClampPosition(ScreenPoint point)
+        {
+            var scale = Scale;
+            return Glass.Clamp(point, (int)Math.Round(Width * scale), (int)Math.Round(Height * scale));
+        }
+
+        protected void MoveWhileDragging(ScreenPoint point, ref ScreenPoint previous)
+        {
+            point = ClampPosition(point);
+            if (point.X == previous.X && point.Y == previous.Y) return;
+            if (Windows.SetWindowPos(Hwnd, IntPtr.Zero, point.X, point.Y, 0, 0, Windows.KeepOrder | 1))
+                previous = point;
         }
 
         public void RaiseWithoutFocus()
@@ -424,20 +448,21 @@ namespace GlassClicker
         {
             var origin = default(ScreenPoint);
             var grab = default(ScreenPoint);
+            var previous = default(ScreenPoint);
             header.Cursor = Cursors.SizeAll;
             new PointerDrag(header, (args, point) =>
             {
                 for (var source = args.OriginalSource as DependencyObject; source != null && source != header;
                     source = source is Visual ? VisualTreeHelper.GetParent(source) : LogicalTreeHelper.GetParent(source))
                     if (source is ButtonBase) return false;
-                origin = Position;
+                previous = origin = Position;
                 grab = point;
                 return true;
             }, cursor =>
             {
                 var x = cursor.X - grab.X;
                 var y = cursor.Y - grab.Y;
-                Move(new ScreenPoint(origin.X + x, origin.Y + y));
+                MoveWhileDragging(new ScreenPoint(origin.X + x, origin.Y + y), ref previous);
             }, (point, moved) => { if (moved && displaced != null) displaced(Position); }, threshold: 4);
         }
     }
@@ -551,19 +576,20 @@ namespace GlassClicker
                 Content = orbArea;
             }
             var pickTarget = false;
+            var previous = default(ScreenPoint);
             new PointerDrag(sphere, (args, point) => {
                 if (Grabbed != null) Grabbed();
-                grab = point; original = Position;
+                grab = point; previous = original = Position;
                 pickTarget = CanDragTarget != null && CanDragTarget();
                 return true;
             }, cursor => {
                 if (pickTarget) TargetDragged(cursor);
-                else Move(new ScreenPoint(original.X + cursor.X - grab.X, original.Y + cursor.Y - grab.Y));
+                else MoveWhileDragging(new ScreenPoint(original.X + cursor.X - grab.X, original.Y + cursor.Y - grab.Y), ref previous);
             }, (point, dragged) => {
                 Glass.Bounce((ScaleTransform)sphere.RenderTransform);
                 if (dragged && pickTarget) TargetReleased(point);
                 else if (dragged) { if (Dragged != null) Dragged(); }
-                else if (Tapped != null) Tapped();
+                else if (Tapped != null) { UiSounds.Click(); Tapped(); }
             }, () => { if (pickTarget && TargetCanceled != null) TargetCanceled(); });
         }
 
@@ -781,12 +807,12 @@ namespace GlassClicker
             {
                 if (!IsMouseCaptured) return;
                 ReleaseMouseCapture();
-                if (Clicked != null && hitArea.FillContains(args.GetPosition(this))) Clicked();
+                if (Clicked != null && hitArea.FillContains(args.GetPosition(this))) { UiSounds.Click(); Clicked(); }
                 args.Handled = true;
             };
             KeyDown += (sender, args) =>
             {
-                if ((args.Key == Key.Enter || args.Key == Key.Space) && Clicked != null) { Clicked(); args.Handled = true; }
+                if ((args.Key == Key.Enter || args.Key == Key.Space) && Clicked != null) { UiSounds.Click(); Clicked(); args.Handled = true; }
             };
         }
 

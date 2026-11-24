@@ -152,6 +152,7 @@ namespace GlassClicker
         public bool LocatorVisible { get { return locator != null; } }
         public bool PauseOthersWhileEditing { get { return preferences.PauseOthersWhileEditing; } }
         public bool RememberPanelPosition { get { return preferences.RememberPanelPosition; } }
+        public bool InterfaceSounds { get { return preferences.InterfaceSounds; } }
         public int OutlineStrength { get { return preferences.OutlineStrength; } }
         private bool Running { get { return tasks.Any(CountsAsGroupOutput); } }
         private bool Collected { get { return tasks.Count > 1 && !expanded; } }
@@ -180,6 +181,7 @@ namespace GlassClicker
             preferencePath = Path.Combine(dataRoot, "快捷键.txt");
             settingsPath = Path.Combine(dataRoot, "设置.json");
             preferences = ReadSettings();
+            UiSounds.SetEnabled(preferences.InterfaceSounds);
             emergencyKey = Shortcut.Parse(preferences.EmergencyKey);
             lastForeground = Windows.ForegroundTarget();
             var area = Glass.Screen(Windows.Cursor()).WorkingArea;
@@ -304,7 +306,7 @@ namespace GlassClicker
         {
             try { if (File.Exists(preferencePath)) return Shortcut.Parse(File.ReadAllText(preferencePath)); }
             catch (Exception error) { if (!IsConfigError(error)) throw; }
-            return Shortcut.Parse("F8");
+            return Shortcut.Parse(AppSettings.DefaultShortcut);
         }
 
         private IntPtr MessageReceived(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -410,6 +412,7 @@ namespace GlassClicker
 
         public void ToggleVisibility()
         {
+            UiSounds.Click();
             if (!hidden)
             {
                 hiddenEditor = panel == null ? null : panel.Task;
@@ -1050,6 +1053,7 @@ namespace GlassClicker
             if (target != null)
             {
                 SetTarget(task, target);
+                UiSounds.Click();
                 if (!hasEditor) ShowEditor(task);
                 Report("已切换到 " + target.Name);
             }
@@ -1157,6 +1161,7 @@ namespace GlassClicker
         public void ToggleOne(ClickTask task)
         {
             if (!tasks.Contains(task)) return;
+            UiSounds.Click();
             Touch();
             if (task.Worker.State.HasSession) task.Worker.TogglePause();
             else StartOne(task);
@@ -1166,6 +1171,7 @@ namespace GlassClicker
 
         public void StopOne(ClickTask task)
         {
+            if (task.Worker.State.HasSession) UiSounds.Click();
             task.Worker.Stop();
             RefreshLabels();
             QueueOutlineLayout();
@@ -1175,6 +1181,7 @@ namespace GlassClicker
         {
             if (keySuspended) return;
             if (tasks.Count == 0) { if (hidden) ShowOrbs(); return; }
+            UiSounds.Click();
             Touch();
             if (Running)
             {
@@ -1497,6 +1504,14 @@ namespace GlassClicker
             return SaveSettings();
         }
 
+        public string ChangeInterfaceSounds(bool enabled)
+        {
+            preferences.InterfaceSounds = enabled;
+            UiSounds.SetEnabled(enabled);
+            if (enabled) UiSounds.Click();
+            return SaveSettings();
+        }
+
         public void ChangeOutlineStrength(int strength)
         {
             if (OutlineStrength == strength) return;
@@ -1527,6 +1542,7 @@ namespace GlassClicker
                 LayoutFile.Write(layoutPath, layout);
                 profileName = name;
                 owner.Notice("✓ 已保存「" + name + "」");
+                UiSounds.Click();
             }
             catch (Exception error)
             {

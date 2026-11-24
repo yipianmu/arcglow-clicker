@@ -22,6 +22,10 @@ $arguments = @('/nologo', '/target:winexe', '/platform:anycpu', '/optimize+', '/
 $references = @('System.Xaml.dll', 'WPF/WindowsBase.dll', 'WPF/PresentationCore.dll', 'WPF/PresentationFramework.dll',
     'WPF/UIAutomationClient.dll', 'WPF/UIAutomationTypes.dll', 'System.Windows.Forms.dll', 'System.Drawing.dll', 'System.Web.Extensions.dll')
 $arguments += $references | ForEach-Object { "/reference:$(Join-Path $framework $_)" }
+$arguments += @('click.wav', 'key.wav') | ForEach-Object {
+    $sound = Join-Path $glass "Audio/$_"
+    "/resource:$sound,ArcGlow.Audio.$_"
+}
 $arguments += @((Join-Path $source 'NativeMouse.cs'), (Join-Path $source 'NativeInput.cs'))
 $arguments += Get-ChildItem -LiteralPath $glass -Filter '*.cs' -File | Sort-Object Name | ForEach-Object FullName
 

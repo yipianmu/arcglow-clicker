@@ -155,7 +155,7 @@ namespace GlassClicker
             var remove = Glass.Button("删除这枚", Brushes.Transparent, Glass.DeleteInk);
             remove.Height = 23; remove.FontSize = 10.5; remove.Padding = new Thickness(4, 0, 4, 0);
             remove.Click += (sender, args) => host.RemoveTask(task);
-            shortcut = Glass.Button("F8"); shortcut.Height = 23; shortcut.FontSize = 10.5;
+            shortcut = Glass.Button(AppSettings.DefaultShortcut); shortcut.Height = 23; shortcut.FontSize = 10.5;
             overlayKey = Glass.Button(""); overlayKey.Height = 23; overlayKey.FontSize = 10.5;
             overlayKey.Click += (sender, args) => host.ToggleVisibility();
             shortcut.Click += (sender, args) => Record(true, value => host.ChangeShortcut(value));
@@ -565,7 +565,7 @@ namespace GlassClicker
         private long last;
         public string Value { get; private set; }
 
-        public RecordPanel(Window owner, bool hotkey, string currentShortcut = "F8")
+        public RecordPanel(Window owner, bool hotkey, string currentShortcut = AppSettings.DefaultShortcut)
             : base(hotkey ? "设置快捷键" : "录制连点动作", 340, hotkey ? 175 : 195, true)
         {
             Owner = owner;

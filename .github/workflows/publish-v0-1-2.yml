@@ -1,0 +1,23 @@
+name: Publish ArcGlow v0.1.2
+on:
+  push:
+    branches: ['release/v0.1.2']
+    paths: ['.github/workflows/publish-v0-1-2.yml']
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify and publish the portable executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TARGET: '0edd28094cb995a73602866824b7d0637cf38ba2'
+        run: |
+          base_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA"
+          curl -fsSL --retry 2 "$base_url/ArcGlow-v0.1.2.exe" -o "ArcGlow-v0.1.2.exe"
+          curl -fsSL --retry 2 "$base_url/release-notes.md" -o release-notes.md
+          curl -fsSL --retry 2 "$base_url/SHA256SUMS" -o SHA256SUMS
+          sha256sum --check SHA256SUMS
+          gh release create 'v0.1.2' 'ArcGlow-v0.1.2.exe' --repo "$GITHUB_REPOSITORY" --target "$RELEASE_TARGET" --title "弧光连点器 v0.1.2" --notes-file release-notes.md --latest

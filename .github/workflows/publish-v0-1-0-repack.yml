@@ -1,0 +1,31 @@
+name: Update the ArcGlow v0.1.0 download
+on:
+  push:
+    branches: ['release/v0.1.0-repack']
+    paths: ['.github/workflows/publish-v0-1-0-repack.yml']
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify and attach the corrected portable executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          base_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA"
+          asset='ArcGlow-v0.1.0-repack.exe'
+          curl -fsSL --retry 2 "$base_url/$asset" -o "$asset"
+          curl -fsSL --retry 2 "$base_url/release-notes.md" -o release-notes.md
+          curl -fsSL --retry 2 "$base_url/SHA256SUMS" -o SHA256SUMS
+          sha256sum --check SHA256SUMS
+          assets=$(gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          if grep -Fxq "$asset" <<< "$assets"; then
+            gh release download v0.1.0 --repo "$GITHUB_REPOSITORY" --pattern "$asset" --output existing-repack.exe
+            cmp -- "$asset" existing-repack.exe
+          else
+            gh release upload v0.1.0 "$asset#Windows 单文件修正版" --repo "$GITHUB_REPOSITORY"
+          fi
+          gh release edit v0.1.0 --repo "$GITHUB_REPOSITORY" --verify-tag --latest --title "弧光连点器 v0.1.0" --notes-file release-notes.md

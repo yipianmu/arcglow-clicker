@@ -1,34 +1,100 @@
-name: Update ArcGlow v0.1.0 release notes
+name: Refresh ArcGlow v0.1.0 portable files
 on:
   push:
-    branches: ['release/v0.1.0-portable']
-    paths: ['.github/workflows/publish-v0-1-0-portable.yml']
+    branches: ["release/v0.1.0-portable"]
 permissions:
   contents: write
-concurrency: arcglow-v0-1-0-release
+concurrency:
+  group: arcglow-v0.1.0-release
+  cancel-in-progress: false
 jobs:
-  notes:
+  publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 5
     steps:
-      - name: Update release description
+      - name: Verify and replace the published files
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          set -euo pipefail
-          repository="repos/$GITHUB_REPOSITORY"
-          base="https://raw.githubusercontent.com/$GITHUB_REPOSITORY"
-          curl -fsSL --retry 2 "$base/382e888844ad12ef3b0193846976039534efe244/release-notes.md" -o previous-notes.md
-          curl -fsSL --retry 2 "$base/$GITHUB_SHA/release-notes.md" -o release-notes.md
-          release=$(gh api "$repository/releases/tags/v0.1.0")
-          test "$(jq -r .id <<<"$release")" = 456542993
-          current=$(jq -r .body <<<"$release")
-          wanted=$(cat release-notes.md)
-          if [[ "$current" = "$wanted" ]]; then exit 0; fi
-          if [[ "$current" != "$(cat previous-notes.md)" ]]; then
-            echo "::error::Release description differs from the expected prior version."
-            exit 1
-          fi
-          jq --null-input --rawfile body release-notes.md '{body: $body}' > release-patch.json
-          result=$(gh api --method PATCH "$repository/releases/456542993" --input release-patch.json)
-          test "$(jq -r .body <<<"$result")" = "$wanted"
+          set -Eeuo pipefail
+          repo="$GITHUB_REPOSITORY"
+          raw="https://raw.githubusercontent.com/$repo"
+          release="/repos/$repo/releases/456542993"
+          assets="/repos/$repo/releases/assets"
+          tag="v0.1.0"
+          exe="ArcGlow-v0.1.0-Portable.exe"
+          zip="ArcGlow-v0.1.0-Source.zip"
+          candidate_exe="ArcGlow-v0.1.0-Portable-candidate.exe"
+          candidate_zip="ArcGlow-v0.1.0-Source-candidate.zip"
+          old_exe=787158163
+          old_zip=787158165
+          
+          curl -fsSL "$raw/c9bee468d4b24a6021dc8a009d1c01ac10439419/$exe" -o "$candidate_exe"
+          curl -fsSL "$raw/$GITHUB_SHA/candidate/$zip" -o "$candidate_zip"
+          curl -fsSL "$raw/$GITHUB_SHA/release-notes.md" -o next.md
+          curl -fsSL "$raw/da804b3a5e980a4bbebad1842e7037720e26dd70/release-notes.md" -o previous.md
+          printf '%s  %s\n' 'b57ecbbd848a49b8685cf003dc991d695db78d3d5edafdcad76371cbc5a6589b' "$candidate_exe" '64e2dd29c3da6f6f661638a581362d292a52e94966b0d0fe98249ab193932848' "$candidate_zip" | sha256sum -c
+          gh api "$release" > current.json
+          jq -e --arg exe "$exe" --arg zip "$zip" '[.assets[].name] | sort == ([$exe, $zip] | sort)' current.json >/dev/null
+          jq -j .body current.json | cmp - previous.md
+          
+          asset_matches() {
+            gh api "$assets/$1" | jq -e --arg name "$2" --arg hash "sha256:$3" '.name == $name and .digest == $hash' >/dev/null
+          }
+          rename_asset() {
+            gh api --method PATCH "$assets/$1" -f name="$2" --silent
+          }
+          set_notes() {
+            jq -n --rawfile body "$1" '{body: $body}' > notes-patch.json
+            gh api --method PATCH "$release" --input notes-patch.json --silent
+          }
+          
+          asset_matches "$old_exe" "$exe" '4e67fc9f7c88ee32514a6f72ff1907c7c68e3776842c0362fc78d763b89d14b2'
+          asset_matches "$old_zip" "$zip" '968b48394249914ace9c0ce608be420cf56801a7765d6ca602b18f97b521e762'
+          gh release upload "$tag" "$candidate_exe" "$candidate_zip" --repo "$repo"
+          gh api "$release" > staged.json
+          next_exe="$(jq -er --arg name "$candidate_exe" '.assets[] | select(.name == $name).id' staged.json)"
+          next_zip="$(jq -er --arg name "$candidate_zip" '.assets[] | select(.name == $name).id' staged.json)"
+          
+          previous_exe_moved=0
+          previous_zip_moved=0
+          next_exe_moved=0
+          next_zip_moved=0
+          notes_updated=0
+          rollback() {
+            status=$?
+            trap - ERR
+            set +e
+            if [ "$notes_updated" = 1 ]; then set_notes previous.md; fi
+            if [ "$next_exe_moved" = 1 ]; then rename_asset "$next_exe" "$candidate_exe"; fi
+            if [ "$next_zip_moved" = 1 ]; then rename_asset "$next_zip" "$candidate_zip"; fi
+            if [ "$previous_exe_moved" = 1 ]; then rename_asset "$old_exe" "$exe"; fi
+            if [ "$previous_zip_moved" = 1 ]; then rename_asset "$old_zip" "$zip"; fi
+            gh api --method DELETE "$assets/$next_exe" --silent
+            gh api --method DELETE "$assets/$next_zip" --silent
+            exit "$status"
+          }
+          trap rollback ERR
+          
+          asset_matches "$next_exe" "$candidate_exe" 'b57ecbbd848a49b8685cf003dc991d695db78d3d5edafdcad76371cbc5a6589b'
+          asset_matches "$next_zip" "$candidate_zip" '64e2dd29c3da6f6f661638a581362d292a52e94966b0d0fe98249ab193932848'
+          rename_asset "$old_exe" "$exe.previous"
+          previous_exe_moved=1
+          rename_asset "$old_zip" "$zip.previous"
+          previous_zip_moved=1
+          gh api --method PATCH "$assets/$next_exe" -f name="$exe" -f label="Windows 便携版" --silent
+          next_exe_moved=1
+          gh api --method PATCH "$assets/$next_zip" -f name="$zip" -f label="对应源码（ZIP）" --silent
+          next_zip_moved=1
+          asset_matches "$next_exe" "$exe" 'b57ecbbd848a49b8685cf003dc991d695db78d3d5edafdcad76371cbc5a6589b'
+          asset_matches "$next_zip" "$zip" '64e2dd29c3da6f6f661638a581362d292a52e94966b0d0fe98249ab193932848'
+          gh api "$release" | jq -j .body | cmp - previous.md
+          set_notes next.md
+          notes_updated=1
+          gh api "$release" | jq -j .body | cmp - next.md
+          trap - ERR
+          
+          gh api --method DELETE "$assets/$old_exe" --silent
+          gh api --method DELETE "$assets/$old_zip" --silent
+          gh api "$release" | jq -e --arg exe "$exe" --arg zip "$zip" '[.assets[].name] | sort == ([$exe, $zip] | sort)'

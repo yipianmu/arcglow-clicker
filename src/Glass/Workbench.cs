@@ -1430,6 +1430,7 @@ namespace GlassClicker
 
         public void ShowSettings()
         {
+            UiSounds.Click();
             if (settingsDialog != null) { settingsDialog.RaiseWithoutFocus(); return; }
             var editor = panel;
             var task = editor != null ? editor.Task : tasks.Count == 1 ? tasks[0] : null;

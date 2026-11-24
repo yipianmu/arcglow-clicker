@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Media;
@@ -29,7 +30,7 @@ namespace GlassClicker
             Glass.On(heading, Glass.Text("弧光设置", 20, Glass.Ink, true), 0, 0);
             var close = Glass.Button("×"); close.Width = 31; close.Padding = new Thickness(0);
             AutomationProperties.SetName(close, "关闭设置");
-            close.Click += (sender, args) => Close();
+            close.Click += (sender, args) => { UiSounds.Click(); Close(); };
             Glass.On(heading, close, 0, 1);
             DockPanel.SetDock(heading, Dock.Top);
             layout.Children.Add(heading);
@@ -41,7 +42,7 @@ namespace GlassClicker
             var save = Glass.Button("保存当前配置");
             save.Click += (sender, args) => host.SaveConfiguration(this);
             var open = Glass.Button("打开与管理");
-            open.Click += (sender, args) => host.OpenConfiguration(this);
+            open.Click += (sender, args) => { UiSounds.Click(); host.OpenConfiguration(this); };
             Glass.On(files, save, 0, 0); Glass.On(files, open, 0, 2);
             body.Children.Add(files);
 
@@ -51,6 +52,7 @@ namespace GlassClicker
             AutomationProperties.SetName(automaticPause, "切换调试时自动暂停");
             automaticPause.Click += (sender, args) =>
             {
+                UiSounds.Click();
                 var active = !host.PauseOthersWhileEditing;
                 var error = host.ChangePauseOthers(active);
                 automaticPause.Content = active ? "已开启" : "已关闭";
@@ -66,6 +68,7 @@ namespace GlassClicker
             AutomationProperties.SetName(rememberPosition, "切换记住面板位置");
             rememberPosition.Click += (sender, args) =>
             {
+                UiSounds.Click();
                 var enabled = !host.RememberPanelPosition;
                 var error = host.ChangeRememberPanelPosition(enabled);
                 rememberPosition.Content = enabled ? "已开启" : "已关闭";
@@ -78,15 +81,25 @@ namespace GlassClicker
                 host.InterfaceSounds ? Glass.Blue : Glass.Muted);
             AutomationProperties.SetName(sound, "切换界面音效");
             Glass.Hint(sound, "播放按钮点击和文本输入反馈。");
+            var sample = Glass.Button("试听", Glass.White, Glass.Muted);
+            sample.Height = sound.Height = 27;
+            sample.Margin = new Thickness(0, 0, 5, 0);
+            sample.IsEnabled = host.InterfaceSounds;
+            AutomationProperties.SetName(sample, "试听界面音效");
+            sample.Click += (sender, args) => UiSounds.Click();
             sound.Click += (sender, args) =>
             {
                 var enabled = !host.InterfaceSounds;
                 var error = host.ChangeInterfaceSounds(enabled);
                 sound.Content = enabled ? "已开启" : "已关闭";
                 sound.Foreground = enabled ? Glass.Blue : Glass.Muted;
+                sample.IsEnabled = enabled;
                 Notice(error ?? (enabled ? "界面音效已开启" : "界面音效已关闭"), error != null);
             };
-            body.Children.Add(Row("界面音效", sound));
+            var soundButtons = new StackPanel { Orientation = Orientation.Horizontal };
+            soundButtons.Children.Add(sample);
+            soundButtons.Children.Add(sound);
+            body.Children.Add(Row("界面音效", soundButtons));
 
             if (task != null)
             {
@@ -150,7 +163,7 @@ namespace GlassClicker
             body.Children.Add(Row("紧急停止全部", emergency));
             var learn = Glass.Button("查看", Glass.White);
             AutomationProperties.SetName(learn, "查看使用教程");
-            learn.Click += (sender, args) => host.ShowGuide(this, false);
+            learn.Click += (sender, args) => { UiSounds.Click(); host.ShowGuide(this, false); };
             body.Children.Add(Row("使用教程", learn));
             notice = Glass.Text("", 11, Glass.Muted);
             notice.TextTrimming = TextTrimming.CharacterEllipsis;
@@ -158,22 +171,78 @@ namespace GlassClicker
             notice.Visibility = Visibility.Collapsed;
             DockPanel.SetDock(notice, Dock.Bottom);
             layout.Children.Add(notice);
-            layout.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false });
+            var scroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false };
+            scroll.Resources[typeof(ScrollBar)] = SettingsScrollBar;
+            layout.Children.Add(scroll);
         }
+
+        private static readonly Style SettingsScrollBar = (Style)XamlReader.Parse(
+            @"<Style TargetType='ScrollBar' xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
+                xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'>
+                <Style.Resources>
+                  <ControlTemplate x:Key='ScrollPageButton' TargetType='RepeatButton'>
+                    <Border Background='Transparent'/>
+                  </ControlTemplate>
+                </Style.Resources>
+                <Setter Property='Width' Value='11'/>
+                <Setter Property='Template'>
+                  <Setter.Value>
+                    <ControlTemplate TargetType='ScrollBar'>
+                      <Grid Background='Transparent' Margin='1,3,0,3'>
+                        <Border Width='4' Background='#F1F3F6' CornerRadius='2'/>
+                        <Track x:Name='PART_Track' Orientation='Vertical' IsDirectionReversed='True'
+                              Minimum='{TemplateBinding Minimum}' Maximum='{TemplateBinding Maximum}'
+                              ViewportSize='{TemplateBinding ViewportSize}'
+                              Value='{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}'>
+                          <Track.DecreaseRepeatButton>
+                            <RepeatButton Command='ScrollBar.PageUpCommand' Focusable='False'
+                              Template='{StaticResource ScrollPageButton}'/>
+                          </Track.DecreaseRepeatButton>
+                          <Track.IncreaseRepeatButton>
+                            <RepeatButton Command='ScrollBar.PageDownCommand' Focusable='False'
+                              Template='{StaticResource ScrollPageButton}'/>
+                          </Track.IncreaseRepeatButton>
+                          <Track.Thumb>
+                            <Thumb Focusable='False'>
+                              <Thumb.Template>
+                                <ControlTemplate TargetType='Thumb'>
+                                  <Grid Background='Transparent'>
+                                    <Border x:Name='Grip' Width='5' CornerRadius='3' Background='#C0CBDA'/>
+                                  </Grid>
+                                  <ControlTemplate.Triggers>
+                                    <Trigger Property='IsMouseOver' Value='True'>
+                                      <Setter TargetName='Grip' Property='Background' Value='#9DACBF'/>
+                                    </Trigger>
+                                    <Trigger Property='IsDragging' Value='True'>
+                                      <Setter TargetName='Grip' Property='Background' Value='#879DB8'/>
+                                    </Trigger>
+                                  </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                              </Thumb.Template>
+                            </Thumb>
+                          </Track.Thumb>
+                        </Track>
+                      </Grid>
+                    </ControlTemplate>
+                  </Setter.Value>
+                </Setter>
+              </Style>");
 
         private static readonly ControlTemplate StrengthTrack = (ControlTemplate)XamlReader.Parse(
             @"<ControlTemplate TargetType='Slider' xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
                 xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'>
                 <Grid Height='23' Background='Transparent'>
-                  <Border Background='#DCE4EF' Height='5' CornerRadius='3' Margin='9,0'/>
+                  <Border Background='#DAE2ED' Height='3' CornerRadius='2' Margin='9,0'/>
                   <Track x:Name='PART_Track' VerticalAlignment='Center' Height='19'
                     Minimum='{TemplateBinding Minimum}' Maximum='{TemplateBinding Maximum}'
                     Value='{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}'>
                     <Track.DecreaseRepeatButton>
                       <RepeatButton Focusable='False' Command='Slider.DecreaseLarge'>
                         <RepeatButton.Template><ControlTemplate TargetType='RepeatButton'>
-                          <Border Background='#527FC5' Height='5' CornerRadius='3' Margin='9,0,0,0'/>
+                          <Grid Background='Transparent'>
+                            <Border Background='#527FC5' Height='3' CornerRadius='2' Margin='9,0,-9,0'/>
+                          </Grid>
                         </ControlTemplate></RepeatButton.Template>
                       </RepeatButton>
                     </Track.DecreaseRepeatButton>
@@ -185,7 +254,9 @@ namespace GlassClicker
                     <Track.Thumb>
                       <Thumb Width='18' Height='18' Cursor='Hand'>
                         <Thumb.Template><ControlTemplate TargetType='Thumb'>
-                          <Border Background='White' BorderBrush='#527FC5' BorderThickness='2' CornerRadius='9'/>
+                          <Grid Background='Transparent'>
+                            <Ellipse Width='12' Height='12' Fill='White' Stroke='#527FC5' StrokeThickness='1.35'/>
+                          </Grid>
                         </ControlTemplate></Thumb.Template>
                       </Thumb>
                     </Track.Thumb>
@@ -219,7 +290,7 @@ namespace GlassClicker
                 slider.Value = Math.Min(100, Math.Max(0, value));
             };
             new PointerDrag(slider, (args, point) => { moveThumb(point); return true; }, moveThumb,
-                (point, moved) => moveThumb(point));
+                (point, moved) => { moveThumb(point); UiSounds.Click(); });
             content.Children.Add(slider);
             tile.Child = content;
             return tile;
@@ -245,14 +316,14 @@ namespace GlassClicker
             body.Children.Add(label);
         }
 
-        private static Border Row(string title, Button button)
+        private static Border Row(string title, FrameworkElement control)
         {
-            button.Height = 27;
+            control.Height = 27;
             var tile = Glass.Tile("#F3F4F6", 11, new Thickness(9, 4, 5, 4));
             tile.Margin = new Thickness(0, 0, 0, 5);
             var grid = TaskPanel.Columns(new GridLength(1, GridUnitType.Star), GridLength.Auto);
             Glass.On(grid, Glass.Text(title, 12, Glass.Ink, true), 0, 0);
-            Glass.On(grid, button, 0, 1);
+            Glass.On(grid, control, 0, 1);
             tile.Child = grid;
             return tile;
         }

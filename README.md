@@ -4,7 +4,7 @@ Windows 悬浮连点器。每枚悬浮球绑定一个窗口，独立设置键鼠
 
 ## 下载
 
-下载 [v0.1.0 Windows 单文件修正版](https://github.com/yipianmu/arcglow-clicker/releases/download/v0.1.0/ArcGlow-v0.1.0-repack.exe)，双击即可打开。适用于配有 .NET Framework 4.8 的 Windows 10 和 11。
+下载 [v0.1.0 Windows 单文件](https://github.com/yipianmu/arcglow-clicker/releases/download/v0.1.0/ArcGlow-v0.1.0-Windows.exe)，双击即可打开。适用于配有 .NET Framework 4.8 的 Windows 10 和 11。
 
 ## 快速上手
 
@@ -19,7 +19,7 @@ Windows 悬浮连点器。每枚悬浮球绑定一个窗口，独立设置键鼠
 
 小球和目标窗口共用弧光颜色与强度。多枚连点同时输出到同一个窗口时，边缘会显示交融的颜色。设置里可以调强度、保存配置或关闭默认开启的调试自动暂停。紧急停止键默认是 `Ctrl+Shift+F10`。布局和配置保存在 `%LOCALAPPDATA%\GlassClicker`。
 
-启动连点、切换悬浮界面和编辑内容时有轻量的音效反馈。可以在设置里关闭「界面音效」。点击采样来自 [哇！口袋](https://battle.yipianmu.online/)。
+启动连点、切换悬浮界面和编辑内容时有轻量的音效反馈。可以在设置里试听或关闭「界面音效」。点击采样来自 [哇！口袋](https://battle.yipianmu.online/)。
 
 弧光通过 Windows 窗口消息向选定窗口发送输入。应用接收窗口消息的方式各有不同，请在目标软件里短时间试跑确认。
 

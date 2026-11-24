@@ -73,7 +73,7 @@ namespace GlassClicker
                 }
                 var player = bank[(int)effect];
                 if (player == null) continue;
-                try { player.Play(); }
+                try { player.PlaySync(); }
                 catch (TimeoutException) { }
                 catch (InvalidOperationException) { }
             }

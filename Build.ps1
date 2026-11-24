@@ -29,6 +29,27 @@ $arguments += @('click.wav', 'key.wav') | ForEach-Object {
 $arguments += @((Join-Path $source 'NativeMouse.cs'), (Join-Path $source 'NativeInput.cs'))
 $arguments += Get-ChildItem -LiteralPath $glass -Filter '*.cs' -File | Sort-Object Name | ForEach-Object FullName
 
-& $compiler @arguments
-if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE." }
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$sourceZip = Join-Path $dist ('source-' + [Guid]::NewGuid().ToString('N') + '.zip')
+try {
+    $bundleFiles = @('Build.ps1', 'README.md', 'LICENSE', '.gitignore') | ForEach-Object {
+        Get-Item -LiteralPath (Join-Path $PSScriptRoot $_) -Force
+    }
+    $bundleFiles += Get-ChildItem -LiteralPath $source -File -Recurse | Where-Object {
+        $_.Extension -in '.cs', '.ico', '.manifest', '.wav'
+    }
+    $zip = [IO.Compression.ZipFile]::Open($sourceZip, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($file in ($bundleFiles | Sort-Object FullName)) {
+            $entry = $file.FullName.Substring($PSScriptRoot.Length + 1).Replace('\', '/')
+            [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $entry) | Out-Null
+        }
+    } finally { $zip.Dispose() }
+    $arguments += "/resource:$sourceZip,ArcGlow.Source.zip"
+    & $compiler @arguments
+    if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE." }
+} finally {
+    if (Test-Path -LiteralPath $sourceZip) { Remove-Item -LiteralPath $sourceZip }
+}
 Get-Item -LiteralPath $exe

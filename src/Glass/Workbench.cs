@@ -152,7 +152,10 @@ namespace GlassClicker
         public bool LocatorVisible { get { return locator != null; } }
         public bool PauseOthersWhileEditing { get { return preferences.PauseOthersWhileEditing; } }
         public bool RememberPanelPosition { get { return preferences.RememberPanelPosition; } }
+        public bool RestoreLayoutOnStart { get { return preferences.RestoreLayoutOnStart; } }
         public bool InterfaceSounds { get { return preferences.InterfaceSounds; } }
+        public int InterfaceSoundVolume { get { return preferences.InterfaceSoundVolume ?? AppSettings.DefaultInterfaceVolume; } }
+        public string CurrentProfileName { get { return profileName; } }
         public int OutlineStrength { get { return preferences.OutlineStrength; } }
         private bool Running { get { return tasks.Any(CountsAsGroupOutput); } }
         private bool Collected { get { return tasks.Count > 1 && !expanded; } }
@@ -181,7 +184,8 @@ namespace GlassClicker
             preferencePath = Path.Combine(dataRoot, "快捷键.txt");
             settingsPath = Path.Combine(dataRoot, "设置.json");
             preferences = ReadSettings();
-            UiSounds.SetEnabled(preferences.InterfaceSounds);
+            preferences.InterfaceSoundVolume = InterfaceSoundVolume;
+            UiSounds.Configure(InterfaceSounds, InterfaceSoundVolume);
             emergencyKey = Shortcut.Parse(preferences.EmergencyKey);
             lastForeground = Windows.ForegroundTarget();
             var area = Glass.Screen(Windows.Cursor()).WorkingArea;
@@ -243,7 +247,7 @@ namespace GlassClicker
                 if (error != null) ConfigurationNotice(settingsDialog, error);
             };
             var first = MakeTask(null, 0);
-            var initialLayout = preset ?? (File.Exists(layoutPath) ? layoutPath : null);
+            var initialLayout = StartupLayout(preset);
             var fresh = initialLayout == null || !File.Exists(initialLayout);
             var pointer = Windows.Cursor();
             if (fresh)
@@ -256,7 +260,7 @@ namespace GlassClicker
             if (fresh) hubHome = first.Home;
             if (initialLayout != null)
             {
-                try { LoadLayout(LayoutFile.Read(initialLayout)); }
+                try { LoadLayout(LayoutFile.Read(initialLayout), preset == null); }
                 catch (Exception error)
                 {
                     if (!IsConfigError(error)) throw;
@@ -268,6 +272,11 @@ namespace GlassClicker
             frames.Start();
             SetRendering(true);
             if (rememberChanges) app.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(ShowFirstGuide));
+        }
+
+        private string StartupLayout(string preset)
+        {
+            return preset ?? (RestoreLayoutOnStart && File.Exists(layoutPath) ? layoutPath : null);
         }
 
         private QuickMenu CreateTrayMenu()
@@ -914,7 +923,7 @@ namespace GlassClicker
             ShowWindow(task.Orb, task.Home);
         }
 
-        private void ShowEditor(ClickTask task)
+        private void ShowEditor(ClickTask task, ScreenPoint? restoredPosition = null)
         {
             if (hidden || !tasks.Contains(task)) return;
             if (packing)
@@ -933,7 +942,8 @@ namespace GlassClicker
             var collected = Collected;
             var anchor = collected ? hub : task.Orb;
             var anchorPosition = anchor.IsVisible ? anchor.Position : collected ? HubPosition() : task.Home;
-            var recognized = task.Target == null ? TargetBinding.Create(Windows.RecognizeGameWindow(Windows.ForegroundTarget())) : null;
+            var recognized = task.Target == null && !restoredPosition.HasValue
+                ? TargetBinding.Create(Windows.RecognizeGameWindow(Windows.ForegroundTarget())) : null;
             if (recognized != null) SetTarget(task, recognized);
             var previous = panel == null ? null : panel.Task;
             CloseEditor(false);
@@ -957,7 +967,7 @@ namespace GlassClicker
                 if (!exiting) { ReturnToOrb(task); RememberCurrentLayout(); }
             };
             var nearby = PanelPosition(editor, anchor, anchorPosition);
-            ShowWindow(editor, (RememberPanelPosition ? task.EditorHome : null) ?? nearby);
+            ShowWindow(editor, restoredPosition ?? (RememberPanelPosition ? task.EditorHome : null) ?? nearby);
             Glass.Animate(editor.Card, true, editor.Position.X < anchorPosition.X);
             QueueOutlineLayout();
             if (!keyRegistered) editor.ShowMessage(shortcut.Text + " 正被占用", true);
@@ -1202,6 +1212,11 @@ namespace GlassClicker
 
         private void Start(ClickTask[] batch)
         {
+            if (retiring.Any(worker => worker.State.HasSession))
+            {
+                Report("正在结束上一组输出，请稍候。", true);
+                return;
+            }
             ObserveForeground();
             var choices = new SavedJob[batch.Length];
             for (var i = 0; i < batch.Length; i++)
@@ -1508,9 +1523,19 @@ namespace GlassClicker
         public string ChangeInterfaceSounds(bool enabled)
         {
             preferences.InterfaceSounds = enabled;
-            UiSounds.SetEnabled(enabled);
+            UiSounds.Configure(enabled, InterfaceSoundVolume);
             if (enabled) UiSounds.Click();
             return SaveSettings();
+        }
+
+        public void ChangeInterfaceSoundVolume(int volume)
+        {
+            volume = Math.Max(0, Math.Min(100, volume));
+            if (InterfaceSoundVolume == volume) return;
+            preferences.InterfaceSoundVolume = volume;
+            UiSounds.Configure(InterfaceSounds, volume);
+            settingsSaveTimer.Stop();
+            settingsSaveTimer.Start();
         }
 
         public void ChangeOutlineStrength(int strength)
@@ -1530,6 +1555,12 @@ namespace GlassClicker
             return SaveSettings();
         }
 
+        public string ChangeRestoreLayoutOnStart(bool enabled)
+        {
+            preferences.RestoreLayoutOnStart = enabled;
+            return SaveSettings();
+        }
+
         public void SaveConfiguration(SettingsDialog owner)
         {
             OverlayInput.End(owner, true);
@@ -1540,9 +1571,10 @@ namespace GlassClicker
                 if (name == null) return;
                 Directory.CreateDirectory(profilesRoot);
                 LayoutFile.Write(ProfilePath(name), layout);
-                LayoutFile.Write(layoutPath, layout);
                 profileName = name;
-                owner.Notice("✓ 已保存「" + name + "」");
+                LayoutFile.Write(layoutPath, CaptureSessionLayout());
+                owner.RefreshProfileName();
+                owner.Notice("已保存「" + name + "」");
                 UiSounds.Click();
             }
             catch (Exception error)
@@ -1558,7 +1590,7 @@ namespace GlassClicker
             if (profileBrowser != null) { profileBrowser.RaiseWithoutFocus(); return; }
             try
             {
-                var picker = new ProfileDialog(owner, false, ProfileNames(), profileName, DeleteProfile, () => !HasRunningJobs);
+                var picker = new ProfileDialog(owner, false, ProfileNames(), profileName, DeleteProfile, () => HasRunningJobs);
                 profileBrowser = picker;
                 picker.Closed += (sender, args) => { profileBrowser = null; QueueEditingPause(); };
                 picker.ShowWithoutFocus(path => LoadConfiguration(owner, path));
@@ -1575,22 +1607,76 @@ namespace GlassClicker
         {
             try
             {
-                if (HasRunningJobs) { ConfigurationNotice(owner, "停止输出后可以打开配置。"); return; }
-                if (!Path.IsPathRooted(path)) path = ProfilePath(path);
-                var layout = LayoutFile.Read(path);
+                var import = Path.IsPathRooted(path);
+                var layout = LayoutFile.Read(import ? path : ProfilePath(path));
+                var name = import ? ImportProfile(path, layout) : path;
                 Directory.CreateDirectory(dataRoot);
+                layout.ProfileName = name;
+                layout.View = null;
                 LayoutFile.Write(layoutPath, layout);
-                var fileName = Path.GetFileName(path);
-                profileName = fileName.EndsWith(ProfileSuffix, StringComparison.OrdinalIgnoreCase) ?
-                    fileName.Substring(0, fileName.Length - ProfileSuffix.Length) : Path.GetFileNameWithoutExtension(fileName);
-                var keyLoaded = LoadLayout(layout);
-                if (settingsDialog == owner) owner.Close();
-                if (!keyLoaded) tray.ShowBalloonTip(3500, "配置已载入", "配置内的快捷键不可用，仍可从悬浮球开始。", Forms.ToolTipIcon.Warning);
+                profileName = name;
+                var keyLoaded = LoadLayout(layout, false);
+                if (owner != null && settingsDialog == owner && owner.IsVisible) owner.Close();
+                UiSounds.Click();
+                if (!keyLoaded) tray.ShowBalloonTip(3500, "已切换配置", "配置内的快捷键不可用，可从悬浮球开始。", Forms.ToolTipIcon.Warning);
             }
             catch (Exception error)
             {
                 if (!IsConfigError(error)) throw;
-                ConfigurationNotice(owner, "打开配置失败。" + error.Message);
+                ConfigurationNotice(owner, "切换配置失败。" + error.Message);
+            }
+        }
+
+        private string ImportProfile(string path, SavedLayout layout)
+        {
+            var file = Path.GetFileName(path);
+            var title = file.EndsWith(ProfileSuffix, StringComparison.OrdinalIgnoreCase)
+                ? file.Substring(0, file.Length - ProfileSuffix.Length) : Path.GetFileNameWithoutExtension(file);
+            if (!ProfileDialog.ValidName(title)) title = "导入配置";
+            var name = title;
+            if (String.Equals(Path.GetFullPath(path), Path.GetFullPath(ProfilePath(name)), StringComparison.OrdinalIgnoreCase))
+                return name;
+            Directory.CreateDirectory(profilesRoot);
+            for (var index = 2; File.Exists(ProfilePath(name)); index++)
+            {
+                var suffix = " (" + index + ")";
+                name = title.Substring(0, Math.Min(title.Length, 48 - suffix.Length)).TrimEnd() + suffix;
+            }
+            layout.ProfileName = null;
+            layout.View = null;
+            LayoutFile.Write(ProfilePath(name), layout);
+            return name;
+        }
+
+        public void ExportSource(SettingsDialog owner)
+        {
+            OverlayInput.End(owner, true);
+            try
+            {
+                var version = typeof(Workbench).Assembly.GetName().Version.ToString(3);
+                var picker = new Microsoft.Win32.SaveFileDialog { Title = "导出源码", FileName = "ArcGlow-Source-v" + version + ".zip",
+                    Filter = "ZIP 压缩包 (*.zip)|*.zip", DefaultExt = ".zip", AddExtension = true, OverwritePrompt = true };
+                using (new ForegroundReturn()) if (picker.ShowDialog(owner) != true) return;
+                WriteSourceArchive(picker.FileName);
+                owner.Notice("已导出源码");
+                UiSounds.Click();
+            }
+            catch (Exception error)
+            {
+                if (!IsConfigError(error)) throw;
+                owner.Notice("导出失败。" + error.Message, true);
+            }
+        }
+
+        private static void WriteSourceArchive(string path)
+        {
+            using (var source = typeof(Workbench).Assembly.GetManifestResourceStream("ArcGlow.Source.zip"))
+            {
+                if (source == null) throw new InvalidOperationException("这个构建未包含源码包。");
+                LayoutFile.WriteAtomically(path, temporary =>
+                {
+                    using (var destination = File.Create(temporary)) source.CopyTo(destination);
+                });
             }
         }
 
@@ -1627,22 +1713,49 @@ namespace GlassClicker
         private void DeleteProfile(string name)
         {
             File.Delete(ProfilePath(name));
-            if (String.Equals(profileName, name, StringComparison.OrdinalIgnoreCase)) profileName = null;
+            if (!String.Equals(profileName, name, StringComparison.OrdinalIgnoreCase)) return;
+            profileName = null;
+            if (settingsDialog != null) settingsDialog.RefreshProfileName();
+            ScheduleLayoutSave();
         }
 
-        private bool LoadLayout(SavedLayout layout)
+        private bool LoadLayout(SavedLayout layout, bool restoreView)
         {
             var keyLoaded = UseShortcut(Shortcut.Parse(layout.Shortcut));
             CloseEditor(false); CloseStatus(); ForgetRemoval(); ClearOutlines();
             Arm(null); motions.Clear(); expanded = false; packing = false; mergeAfterEditor = null;
-            foreach (var task in tasks) task.Orb.Close();
+            foreach (var task in tasks)
+            {
+                if (task.Worker.State.HasSession)
+                {
+                    task.Worker.Stop();
+                    retiring.Add(task.Worker);
+                }
+                task.Orb.Close();
+            }
             tasks.Clear(); hub.Hide();
             if (layout.HubLeft.HasValue && layout.HubTop.HasValue)
                 hubHome = ClampAt(new ScreenPoint(layout.HubLeft.Value, layout.HubTop.Value), 160, 118, hub.Scale);
             statusHome = layout.OutputLeft.HasValue && layout.OutputTop.HasValue
                 ? (ScreenPoint?)new ScreenPoint(layout.OutputLeft.Value, layout.OutputTop.Value) : null;
             foreach (var saved in layout.Jobs) MakeTask(saved, tasks.Count);
+            var view = restoreView ? layout.View : null;
+            if (restoreView && ProfileDialog.ValidName(layout.ProfileName) && File.Exists(ProfilePath(layout.ProfileName)))
+                profileName = layout.ProfileName;
+            expanded = view != null && view.Expanded && tasks.Count > 1;
             ShowOrbs();
+            if (view != null)
+            {
+                var position = view.PanelLeft.HasValue && view.PanelTop.HasValue
+                    ? (ScreenPoint?)new ScreenPoint(view.PanelLeft.Value, view.PanelTop.Value) : null;
+                var editor = tasks.FirstOrDefault(task => task.Color == view.EditorColor);
+                if (editor != null) ShowEditor(editor, position);
+                else if (view.OutputOpen && tasks.Count > 0)
+                {
+                    var anchor = tasks.FirstOrDefault(task => task.Color == view.OutputAnchorColor);
+                    OpenStatus(anchor == null ? hub : anchor.Orb, position);
+                }
+            }
             return keyLoaded;
         }
 
@@ -1654,13 +1767,30 @@ namespace GlassClicker
                 Jobs = tasks.Select(task => task.Snapshot(false)).ToList() };
         }
 
+        private SavedLayout CaptureSessionLayout()
+        {
+            var layout = CaptureLayout();
+            var editor = hidden ? hiddenEditor : panel == null ? null : panel.Task;
+            var outputAnchor = hidden ? hiddenStatusAnchor : statusAnchor;
+            var position = hidden ? hiddenEditorPosition ?? hiddenStatusPosition :
+                panel != null ? panel.Position : status == null ? (ScreenPoint?)null : status.Position;
+            var anchorTask = tasks.FirstOrDefault(task => task.Orb == outputAnchor);
+            layout.ProfileName = profileName;
+            layout.View = new SavedView { Expanded = hidden ? hiddenWasExpanded : expanded,
+                EditorColor = editor == null ? (int?)null : editor.Color, OutputOpen = outputAnchor != null,
+                OutputAnchorColor = anchorTask == null ? (int?)null : anchorTask.Color,
+                PanelLeft = position.HasValue ? (int?)position.Value.X : null,
+                PanelTop = position.HasValue ? (int?)position.Value.Y : null };
+            return layout;
+        }
+
         private void RememberCurrentLayout()
         {
             saveAt = 0;
             if (!rememberChanges) return;
             try
             {
-                var layout = CaptureLayout();
+                var layout = CaptureSessionLayout();
                 Directory.CreateDirectory(dataRoot);
                 LayoutFile.Write(layoutPath, layout);
             }

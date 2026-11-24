@@ -17,20 +17,20 @@ namespace GlassClicker
         private Action<string> chosen;
 
         public ProfileDialog(GlassWindow owner, bool save, string[] names, string current,
-            Action<string> remove = null, Func<bool> canOpen = null)
+            Action<string> remove = null, Func<bool> hasOutput = null)
             : base(save ? "保存配置" : "应用内配置", 320,
-                108 + (save ? 39 : 0) + (names.Length == 0 ? 0 : 10 + Math.Min(names.Length, 4) * 34), true)
+                108 + (save ? 39 : 23) + (names.Length == 0 ? 0 : 10 + Math.Min(names.Length, 4) * 34), true)
         {
             Owner = owner;
             var card = Glass.Card(new Thickness(14));
             Content = card;
             var body = new StackPanel();
             card.Child = body;
-            var title = Glass.Text(save ? "保存当前配置" : "打开应用内配置", 17, Glass.Ink, true);
+            var title = Glass.Text(save ? "保存当前配置" : "切换配置", 17, Glass.Ink, true);
             title.Background = Brushes.Transparent;
             body.Children.Add(title);
             DragBy(title);
-            var nameField = new TextBox { Text = current ?? "我的挂机", FontFamily = Glass.Font, FontSize = 12,
+            var nameField = new TextBox { Text = current ?? "新配置", FontFamily = Glass.Font, FontSize = 12,
                 Foreground = Glass.Ink, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
                 VerticalContentAlignment = VerticalAlignment.Center };
             if (save)
@@ -42,6 +42,15 @@ namespace GlassClicker
                 field.Child = nameField; body.Children.Add(field);
                 System.Windows.Automation.AutomationProperties.SetName(nameField, "配置名称");
             }
+            var currentLabel = Glass.Text("", 11, Glass.Muted);
+            Action showCurrent = () => currentLabel.Text = "当前 · " + (current ?? "未命名配置");
+            if (!save)
+            {
+                currentLabel.Margin = new Thickness(0, 5, 0, 1);
+                currentLabel.TextTrimming = TextTrimming.CharacterEllipsis;
+                showCurrent();
+                body.Children.Add(currentLabel);
+            }
             var profiles = new ObservableCollection<string>(names);
             var list = new ListBox { ItemsSource = profiles, FontFamily = Glass.Font, FontSize = 12,
                 Height = Math.Min(names.Length, 4) * 34 + 3, BorderThickness = new Thickness(0),
@@ -50,7 +59,8 @@ namespace GlassClicker
             ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled);
             if (names.Length > 0)
             {
-                if (!save) list.SelectedItem = names.Contains(current) ? current : names[0];
+                if (!save)
+                    list.SelectedItem = names.FirstOrDefault(name => String.Equals(name, current, StringComparison.OrdinalIgnoreCase)) ?? names[0];
                 list.SelectionChanged += (sender, args) =>
                 {
                     if (save && list.SelectedItem is string) nameField.Text = (string)list.SelectedItem;
@@ -58,7 +68,15 @@ namespace GlassClicker
             }
             list.Visibility = names.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
             body.Children.Add(list);
-            var note = Glass.Text(!save && names.Length == 0 ? "还没有配置，可以导入以前保存的文件。" : "", 10, Glass.Muted);
+            var note = Glass.Text("", 10, Glass.Muted);
+            Action showNote = () =>
+            {
+                if (save) return;
+                note.Text = hasOutput != null && hasOutput() ? "切换配置会停止当前输出。" :
+                    profiles.Count == 0 ? "暂无配置。可以保存当前布局或导入文件。" : "";
+            };
+            showNote();
+            list.SelectionChanged += (sender, args) => showNote();
             note.Height = 18;
             body.Children.Add(note);
             var buttons = TaskPanel.Columns(GridLength.Auto, new GridLength(6), GridLength.Auto,
@@ -70,7 +88,7 @@ namespace GlassClicker
             {
                 list.Visibility = profiles.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
                 list.Height = Math.Min(profiles.Count, 4) * 34 + 3;
-                Height = 108 + (save ? 39 : 0) + (profiles.Count == 0 ? 0 : 10 + Math.Min(profiles.Count, 4) * 34) +
+                Height = 108 + (save ? 39 : 23) + (profiles.Count == 0 ? 0 : 10 + Math.Min(profiles.Count, 4) * 34) +
                     (pending == null ? 0 : 41);
             };
             Action clearConfirm = () =>
@@ -84,7 +102,6 @@ namespace GlassClicker
                 var import = Glass.Button("导入文件");
                 import.Click += (sender, args) =>
                 {
-                    if (canOpen != null && !canOpen()) { note.Text = "停止输出后可以导入配置。"; return; }
                     var picker = new OpenFileDialog { Filter = "连点器配置 (*.clicker.json)|*.clicker.json|JSON 文件 (*.json)|*.json" };
                     using (new ForegroundReturn()) if (picker.ShowDialog(this) != true) return;
                     Complete(picker.FileName);
@@ -111,6 +128,11 @@ namespace GlassClicker
                         try
                         {
                             remove(name);
+                            if (String.Equals(current, name, StringComparison.OrdinalIgnoreCase))
+                            {
+                                current = null;
+                                showCurrent();
+                            }
                             var selected = list.SelectedIndex;
                             profiles.Remove(name);
                             if (profiles.Count != 0) list.SelectedIndex = Math.Max(0, Math.Min(selected, profiles.Count - 1));
@@ -152,13 +174,13 @@ namespace GlassClicker
                 args.Handled = true;
                 Close();
             };
-            var accept = Glass.Button(save ? "保存" : "打开", Glass.Primary, Brushes.White); accept.IsDefault = true;
+            var accept = Glass.Button(save ? "保存" : "切换", Glass.Primary, Brushes.White); accept.IsDefault = true;
+            System.Windows.Automation.AutomationProperties.SetName(accept, save ? "保存配置" : "切换到所选配置");
             accept.IsEnabled = save || list.SelectedItem != null;
             list.SelectionChanged += (sender, args) => accept.IsEnabled = save || list.SelectedItem != null;
             Action submit = () =>
             {
                 if (pending != null) return;
-                if (!save && canOpen != null && !canOpen()) { note.Text = "停止输出后可以打开配置。"; return; }
                 var name = (save ? nameField.Text : list.SelectedItem as string ?? "").Trim();
                 if (!ValidName(name))
                 {
@@ -178,7 +200,7 @@ namespace GlassClicker
             body.Children.Add(buttons);
             Loaded += (sender, args) =>
             {
-                var position = owner.Position;
+                var position = owner == null ? Windows.Cursor() : owner.Position;
                 Move(new ScreenPoint(position.X + 20, position.Y + 52));
                 if (FocusProtected) return;
                 if (save) { nameField.Focus(); nameField.SelectAll(); }

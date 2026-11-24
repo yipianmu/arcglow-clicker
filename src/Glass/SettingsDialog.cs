@@ -13,11 +13,14 @@ namespace GlassClicker
     internal sealed class SettingsDialog : GlassWindow
     {
         private readonly TextBlock notice;
+        private readonly TextBlock profileCaption;
         private readonly Button emergency;
+        private readonly Workbench host;
 
         public SettingsDialog(Workbench host, GlassWindow owner, ClickTask task)
             : base("弧光 · 设置", 372, task == null ? 388 : 512, true)
         {
+            this.host = host;
             if (owner != null) Owner = owner;
             var card = Glass.Card(new Thickness(15));
             var body = new StackPanel();
@@ -38,10 +41,15 @@ namespace GlassClicker
             PreviewKeyDown += (sender, args) => { if (args.Key == Key.Escape) { args.Handled = true; Close(); } };
 
             Section(body, "配置");
+            profileCaption = Glass.Text("", 11, Glass.Muted);
+            profileCaption.Margin = new Thickness(0, 0, 0, 6);
+            profileCaption.TextTrimming = TextTrimming.CharacterEllipsis;
+            body.Children.Add(profileCaption);
+            RefreshProfileName();
             var files = TaskPanel.Columns(new GridLength(1, GridUnitType.Star), new GridLength(7), new GridLength(1, GridUnitType.Star));
             var save = Glass.Button("保存当前配置");
             save.Click += (sender, args) => host.SaveConfiguration(this);
-            var open = Glass.Button("打开与管理");
+            var open = Glass.Button("切换配置");
             open.Click += (sender, args) => { UiSounds.Click(); host.OpenConfiguration(this); };
             Glass.On(files, save, 0, 0); Glass.On(files, open, 0, 2);
             body.Children.Add(files);
@@ -61,7 +69,10 @@ namespace GlassClicker
             };
             Glass.Hint(automaticPause, "调试一枚时暂缓其他任务。收起后自动继续。");
             body.Children.Add(Row("调试时暂停其他连点", automaticPause));
-            body.Children.Add(OutlineControl(host));
+            Slider outlineSlider;
+            body.Children.Add(PercentControl("弧光强度", "窗口弧光强度", host.OutlineStrength,
+                host.ChangeOutlineStrength, StrengthLabel, out outlineSlider));
+            AutomationProperties.SetHelpText(outlineSlider, "0 关闭，100 最亮");
 
             var rememberPosition = Glass.Button(host.RememberPanelPosition ? "已开启" : "已关闭", Glass.White,
                 host.RememberPanelPosition ? Glass.Blue : Glass.Muted);
@@ -77,29 +88,42 @@ namespace GlassClicker
             };
             body.Children.Add(Row("记住拖动后的面板位置", rememberPosition));
 
+            var restore = Glass.Button(host.RestoreLayoutOnStart ? "已开启" : "已关闭", Glass.White,
+                host.RestoreLayoutOnStart ? Glass.Blue : Glass.Muted);
+            AutomationProperties.SetName(restore, "切换启动时恢复布局");
+            Glass.Hint(restore, "下次启动时恢复退出前的任务和悬浮界面布局。");
+            restore.Click += (sender, args) =>
+            {
+                var enabled = !host.RestoreLayoutOnStart;
+                var error = host.ChangeRestoreLayoutOnStart(enabled);
+                restore.Content = enabled ? "已开启" : "已关闭";
+                restore.Foreground = enabled ? Glass.Blue : Glass.Muted;
+                Notice(error ?? "", error != null);
+                UiSounds.Click();
+            };
+            body.Children.Add(Row("启动时恢复上次布局", restore));
+
             var sound = Glass.Button(host.InterfaceSounds ? "已开启" : "已关闭", Glass.White,
                 host.InterfaceSounds ? Glass.Blue : Glass.Muted);
             AutomationProperties.SetName(sound, "切换界面音效");
             Glass.Hint(sound, "播放按钮点击和文本输入反馈。");
-            var sample = Glass.Button("试听", Glass.White, Glass.Muted);
-            sample.Height = sound.Height = 27;
-            sample.Margin = new Thickness(0, 0, 5, 0);
-            sample.IsEnabled = host.InterfaceSounds;
-            AutomationProperties.SetName(sample, "试听界面音效");
-            sample.Click += (sender, args) => UiSounds.Click();
+            Slider volume;
+            var volumeTile = PercentControl("音效音量", "界面音效音量", host.InterfaceSoundVolume,
+                host.ChangeInterfaceSoundVolume, PercentLabel, out volume);
+            volume.IsEnabled = host.InterfaceSounds;
+            volume.Opacity = host.InterfaceSounds ? 1 : .55;
             sound.Click += (sender, args) =>
             {
                 var enabled = !host.InterfaceSounds;
                 var error = host.ChangeInterfaceSounds(enabled);
                 sound.Content = enabled ? "已开启" : "已关闭";
                 sound.Foreground = enabled ? Glass.Blue : Glass.Muted;
-                sample.IsEnabled = enabled;
-                Notice(error ?? (enabled ? "界面音效已开启" : "界面音效已关闭"), error != null);
+                volume.IsEnabled = enabled;
+                volume.Opacity = enabled ? 1 : .55;
+                Notice(error ?? "", error != null);
             };
-            var soundButtons = new StackPanel { Orientation = Orientation.Horizontal };
-            soundButtons.Children.Add(sample);
-            soundButtons.Children.Add(sound);
-            body.Children.Add(Row("界面音效", soundButtons));
+            body.Children.Add(Row("界面音效", sound));
+            body.Children.Add(volumeTile);
 
             if (task != null)
             {
@@ -165,6 +189,11 @@ namespace GlassClicker
             AutomationProperties.SetName(learn, "查看使用教程");
             learn.Click += (sender, args) => { UiSounds.Click(); host.ShowGuide(this, false); };
             body.Children.Add(Row("使用教程", learn));
+            Section(body, "开源");
+            var export = Glass.Button("导出源码");
+            Glass.Hint(export, "保存包含源码、构建脚本和 MIT 许可证的 ZIP 文件。");
+            export.Click += (sender, args) => host.ExportSource(this);
+            body.Children.Add(export);
             notice = Glass.Text("", 11, Glass.Muted);
             notice.TextTrimming = TextTrimming.CharacterEllipsis;
             notice.Height = 20;
@@ -264,41 +293,51 @@ namespace GlassClicker
                 </Grid>
               </ControlTemplate>");
 
-        private static FrameworkElement OutlineControl(Workbench host)
+        private static Border PercentControl(string title, string automationName, int value, Action<int> change,
+            Func<int, string> format, out Slider result)
         {
             var tile = Glass.Tile("#F3F4F6", 11, new Thickness(9, 6, 9, 4));
+            tile.Margin = new Thickness(0, 0, 0, 5);
             var content = new StackPanel();
             var heading = TaskPanel.Columns(new GridLength(1, GridUnitType.Star), GridLength.Auto);
-            var percent = Glass.Text(StrengthLabel(host.OutlineStrength), 11, Glass.Muted);
-            Glass.On(heading, Glass.Text("弧光强度", 12, Glass.Ink, true), 0, 0);
+            var percent = Glass.Text(format(value), 11, Glass.Muted);
+            Glass.On(heading, Glass.Text(title, 12, Glass.Ink, true), 0, 0);
             Glass.On(heading, percent, 0, 1);
             content.Children.Add(heading);
-            var slider = new Slider { Minimum = 0, Maximum = 100, Value = host.OutlineStrength, SmallChange = 1, LargeChange = 10,
+            var slider = new Slider { Minimum = 0, Maximum = 100, Value = value, SmallChange = 1, LargeChange = 10,
                 IsSnapToTickEnabled = true, TickFrequency = 1, Height = 23, Template = StrengthTrack, Cursor = Cursors.Hand };
-            AutomationProperties.SetName(slider, "窗口弧光强度");
-            AutomationProperties.SetHelpText(slider, "0 关闭，100 最亮");
+            AutomationProperties.SetName(slider, automationName);
             slider.ValueChanged += (sender, args) =>
             {
-                var value = (int)Math.Round(args.NewValue);
-                percent.Text = StrengthLabel(value);
-                host.ChangeOutlineStrength(value);
+                var percentValue = (int)Math.Round(args.NewValue);
+                percent.Text = format(percentValue);
+                change(percentValue);
             };
             Action<ScreenPoint> moveThumb = point =>
             {
                 var x = slider.PointFromScreen(new Point(point.X, point.Y)).X;
-                var value = Math.Round((x - 9) * 100 / Math.Max(1, slider.ActualWidth - 18));
-                slider.Value = Math.Min(100, Math.Max(0, value));
+                var percentValue = Math.Round((x - 9) * 100 / Math.Max(1, slider.ActualWidth - 18));
+                slider.Value = Math.Min(100, Math.Max(0, percentValue));
             };
             new PointerDrag(slider, (args, point) => { moveThumb(point); return true; }, moveThumb,
                 (point, moved) => { moveThumb(point); UiSounds.Click(); });
             content.Children.Add(slider);
             tile.Child = content;
+            result = slider;
             return tile;
         }
 
         private static string StrengthLabel(int value)
         {
-            return value == 0 ? "0% · 关闭" : value.ToString(CultureInfo.InvariantCulture) + "%";
+            return value == 0 ? "0% · 关闭" : PercentLabel(value);
+        }
+
+        private static string PercentLabel(int value) { return value.ToString(CultureInfo.InvariantCulture) + "%"; }
+
+        public void RefreshProfileName()
+        {
+            profileCaption.Text = "当前 · " + (host.CurrentProfileName ?? "未命名配置");
+            Glass.Hint(profileCaption, profileCaption.Text);
         }
 
         public void Notice(string message, bool error = false)

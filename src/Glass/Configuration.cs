@@ -14,7 +14,19 @@ namespace GlassClicker
         public int? HubTop { get; set; }
         public int? OutputLeft { get; set; }
         public int? OutputTop { get; set; }
+        public string ProfileName { get; set; }
+        public SavedView View { get; set; }
         public List<SavedJob> Jobs { get; set; }
+    }
+
+    internal sealed class SavedView
+    {
+        public bool Expanded { get; set; }
+        public int? EditorColor { get; set; }
+        public bool OutputOpen { get; set; }
+        public int? OutputAnchorColor { get; set; }
+        public int? PanelLeft { get; set; }
+        public int? PanelTop { get; set; }
     }
 
     internal sealed class SavedJob
@@ -40,18 +52,21 @@ namespace GlassClicker
     {
         public const string DefaultShortcut = "F10";
         public const string DefaultEmergencyKey = "Ctrl+Shift+F10";
+        public const int DefaultInterfaceVolume = 32;
         public bool TutorialSeen { get; set; }
         public string EmergencyKey { get; set; }
         public bool PauseOthersWhileEditing { get; set; }
         public bool RememberPanelPosition { get; set; }
+        public bool RestoreLayoutOnStart { get; set; }
         public bool InterfaceSounds { get; set; }
+        public int? InterfaceSoundVolume { get; set; }
         public int OutlineStrength { get; set; }
 
         public AppSettings()
         {
             EmergencyKey = DefaultEmergencyKey;
             PauseOthersWhileEditing = true;
-            InterfaceSounds = true;
+            RestoreLayoutOnStart = true;
             OutlineStrength = 100;
         }
     }
@@ -89,15 +104,25 @@ namespace GlassClicker
             if (settings == null) return new AppSettings();
             settings.EmergencyKey = Shortcut.Parse(settings.EmergencyKey).Text;
             settings.OutlineStrength = Math.Max(0, Math.Min(100, settings.OutlineStrength));
+            // Earlier releases enabled sounds automatically and did not store a volume.
+            if (!settings.InterfaceSoundVolume.HasValue) settings.InterfaceSounds = false;
+            settings.InterfaceSoundVolume = Math.Max(0, Math.Min(100,
+                settings.InterfaceSoundVolume ?? AppSettings.DefaultInterfaceVolume));
             return settings;
         }
 
         public static void Write(string path, object value)
         {
+            WriteAtomically(path, temporary =>
+                File.WriteAllText(temporary, new JavaScriptSerializer().Serialize(value), new UTF8Encoding(false)));
+        }
+
+        public static void WriteAtomically(string path, Action<string> write)
+        {
             var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
-                File.WriteAllText(temporary, new JavaScriptSerializer().Serialize(value), new UTF8Encoding(false));
+                write(temporary);
                 if (File.Exists(path)) File.Replace(temporary, path, null);
                 else File.Move(temporary, path);
             }

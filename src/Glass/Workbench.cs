@@ -1815,14 +1815,13 @@ namespace GlassClicker
 
         private void RefreshLabels()
         {
-            var aggregate = RunPhase.Idle;
-            var activeColors = new List<Color>();
+            var outputEdge = statusEdge;
+            var activeColors = outputEdge == null ? null : new List<Color>();
             long total = 0;
             for (var i = 0; i < tasks.Count; i++)
             {
                 var task = tasks[i]; var state = task.Worker.State;
                 total += state.Count;
-                if (PhasePriority(state.Phase) > PhasePriority(aggregate)) aggregate = state.Phase;
                 var keys = state.Phase == RunPhase.Active && state.Detail != null ? state.Detail :
                     ShortAction(state.HasSession ? task.RunningAction ?? task.Action : task.Action);
                 var count = state.Holding ? "按住中" : state.Count + " 次";
@@ -1831,14 +1830,14 @@ namespace GlassClicker
                 var orbitCount = state.Holding ? count : CompactCount(state.Count);
                 var detail = destination + " · " + count + (state.Phase == RunPhase.Paused ? " · " + PhaseText(state) : "");
                 var lit = task.OutputActive;
-                if (lit) activeColors.Add(Palette.Get(task.Color).Rim);
+                if (lit && activeColors != null) activeColors.Add(Palette.Get(task.Color).Rim);
                 if (task.Orb.IsVisible)
                 {
                     task.Orb.Display(keys, " · " + orbitCount, destination, state.Phase, detail);
                     task.Orb.ShowOutputLight(lit, OutlineStrength);
                 }
                 if (hub.IsVisible) hub.DisplayProcess(i, keys, " · " + orbitCount, destination, state.Phase, detail,
-                    panel != null && panel.Task == task);
+                    panel != null && panel.Task == task, lit ? OutlineStrength : 0);
                 ProcessRow row;
                 if (!processRows.TryGetValue(task, out row)) continue;
                 var summary = keys + " · " + count + (state.Holding ? "" : " · " + PhaseText(state));
@@ -1858,19 +1857,11 @@ namespace GlassClicker
                     state.Running ? "暂停" : task.Target == null ? "选窗口" : "开始";
                 if ((string)row.Toggle.Content != control) row.Toggle.Content = control;
             }
-            if (hub.IsVisible || statusEdge != null)
+            if (hub.IsVisible) hub.Display("", "", tasks.Count == 0 ? "添加一枚连点" : "输出进程", RunPhase.Idle);
+            if (outputEdge != null)
             {
-                var colors = activeColors.ToArray();
-                if (hub.IsVisible)
-                {
-                    hub.Display("", "", tasks.Count == 0 ? "添加一枚连点" : "输出进程", aggregate);
-                    hub.ShowOutputLight(colors.Length > 0, OutlineStrength, colors);
-                }
-                if (statusEdge != null)
-                {
-                    if (colors.Length > 0) statusEdge.SetColors(colors);
-                    statusEdge.SetLit(colors.Length > 0 && OutlineStrength > 0, OutlineStrength);
-                }
+                if (activeColors.Count > 0) outputEdge.SetColors(activeColors.ToArray());
+                outputEdge.SetLit(activeColors.Count > 0 && OutlineStrength > 0, OutlineStrength);
             }
             if (statusStart != null)
             {
@@ -1901,20 +1892,6 @@ namespace GlassClicker
             var unit = divisor == 100000000L ? "亿" : divisor == 10000 ? "万" : "千";
             var value = (decimal)count / divisor;
             return value.ToString(value < 100 ? "0.#" : "0", CultureInfo.InvariantCulture) + unit;
-        }
-
-        private static int PhasePriority(RunPhase phase)
-        {
-            switch (phase)
-            {
-                case RunPhase.Waiting: return 5;
-                case RunPhase.Delay: return 4;
-                case RunPhase.Active: return 3;
-                case RunPhase.Paused: return 2;
-                case RunPhase.Complete: return 2;
-                case RunPhase.Stopped: return 1;
-                default: return 0;
-            }
         }
 
         private static string PhaseText(RunState state)

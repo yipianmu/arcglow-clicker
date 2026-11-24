@@ -483,10 +483,7 @@ namespace GlassClicker
         private readonly TextBlock target;
         private readonly OrbBadge badge;
         private readonly EdgeLight edge;
-        private readonly Image groupedRim;
         private readonly Brush idleSymbol, activeSymbol;
-        private Color[] rimColors = new Color[0];
-        private int rimStrength;
         private readonly Canvas bands;
         private readonly Border caption;
         private readonly List<OrbBadge> processBadges = new List<OrbBadge>();
@@ -517,15 +514,16 @@ namespace GlassClicker
                 VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 4, 0, 0), Cursor = Cursors.Hand,
                 RenderTransformOrigin = new Point(.5, .5), RenderTransform = new ScaleTransform(1, 1) };
             System.Windows.Automation.AutomationProperties.SetName(sphere, hub ? "展开连点任务" : "展开连点设置");
-            edge = new EdgeLight(palette.Rim);
-            halo = new Ellipse { Stroke = edge.Brush, StrokeThickness = 3.4, Margin = new Thickness(-1.4),
-                Opacity = .25, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
-            sphere.Children.Add(halo);
+            if (!hub)
+            {
+                edge = new EdgeLight(palette.Rim);
+                halo = new Ellipse { Stroke = edge.Brush, StrokeThickness = 3.4, Margin = new Thickness(-1.4),
+                    Opacity = .25, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
+                sphere.Children.Add(halo);
+            }
             sphere.Children.Add(new Ellipse { Fill = Glass.White, Stroke = hub ? Glass.MutedLine : edge.Brush, StrokeThickness = 1.7 });
             if (hub)
             {
-                groupedRim = new Image { Width = diameter, Height = diameter, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
-                sphere.Children.Add(groupedRim);
                 addGlow = Glass.LineIcon(AddGlyph, AddInk, 30, 30, 4.5);
                 addGlow.Opacity = .38;
                 addGlow.Effect = new System.Windows.Media.Effects.BlurEffect { Radius = 7 };
@@ -539,10 +537,13 @@ namespace GlassClicker
                 StrokeThickness = 2, StrokeLineJoin = PenLineJoin.Round, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
                 Stroke = idleSymbol, Stretch = Stretch.Uniform, Width = 21, Height = 21, IsHitTestVisible = false };
             sphere.Children.Add(symbol);
-            statusLight = new Ellipse { Width = 7, Height = 7,
-                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 9, 9),
-                Visibility = Visibility.Collapsed, IsHitTestVisible = false, Fill = Glass.Green };
-            sphere.Children.Add(statusLight);
+            if (!hub)
+            {
+                statusLight = new Ellipse { Width = 7, Height = 7,
+                    HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 9, 9),
+                    Visibility = Visibility.Collapsed, IsHitTestVisible = false, Fill = Glass.Green };
+                sphere.Children.Add(statusLight);
+            }
             caption = Glass.Tile("#F9FFFFFF", 10, new Thickness(8, 2, 8, 3));
             caption.HorizontalAlignment = HorizontalAlignment.Center;
             caption.VerticalAlignment = VerticalAlignment.Top;
@@ -689,67 +690,24 @@ namespace GlassClicker
             if (target.Text != window) { target.Text = window; Glass.Hint(caption, window); }
         }
 
-        public void ShowOutputLight(bool active, int strength, Color[] colors = null)
+        public void ShowOutputLight(bool active, int strength)
         {
-            if (colors != null && colors.Length > 0) edge.SetColors(colors);
+            if (edge == null) return;
             var glowing = active && strength > 0;
             edge.SetLit(glowing, strength);
             statusLight.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
-            halo.Visibility = glowing && groupedRim == null ? Visibility.Visible : Visibility.Collapsed;
-            if (groupedRim == null) symbol.Stroke = glowing ? activeSymbol : idleSymbol;
-            else ShowGroupedRim(glowing ? colors : null, strength);
-        }
-
-        private void ShowGroupedRim(Color[] colors, int strength)
-        {
-            if (colors == null || colors.Length == 0)
-            {
-                groupedRim.Visibility = Visibility.Collapsed;
-                return;
-            }
-            groupedRim.Visibility = Visibility.Visible;
-            if (strength == rimStrength && rimColors.SequenceEqual(colors)) return;
-            rimStrength = strength;
-            rimColors = (Color[])colors.Clone();
-            var artwork = new DrawingGroup();
-            var center = new Point(diameter / 2, diameter / 2);
-            var radius = center.X - 2.25;
-            using (var drawing = artwork.Open())
-            {
-                drawing.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, diameter, diameter));
-                var bands = RimBand.Along(colors).ToArray();
-                for (var pass = 0; pass < 2; pass++)
-                    foreach (var band in bands)
-                    {
-                        var alpha = (byte)Math.Round((pass == 0 ? 53 : 242) * strength / 100.0);
-                        var pen = new Pen(Glass.Fill(Glass.Tint(band.Tone, alpha)), pass == 0 ? 4.5 : 1.9);
-                        if (colors.Length == 1) drawing.DrawEllipse(null, pen, center, radius, radius);
-                        else
-                        {
-                            var start = band.From * 2 * Math.PI - Math.PI / 2;
-                            var end = band.To * 2 * Math.PI - Math.PI / 2;
-                            var geometry = new StreamGeometry();
-                            using (var figure = geometry.Open())
-                            {
-                                figure.BeginFigure(new Point(center.X + radius * Math.Cos(start), center.Y + radius * Math.Sin(start)), false, false);
-                                figure.ArcTo(new Point(center.X + radius * Math.Cos(end), center.Y + radius * Math.Sin(end)),
-                                    new Size(radius, radius), 0, end - start > Math.PI, SweepDirection.Clockwise, true, false);
-                            }
-                            drawing.DrawGeometry(null, pen, geometry);
-                        }
-                    }
-            }
-            artwork.Freeze();
-            groupedRim.Source = new DrawingImage(artwork);
+            halo.Visibility = glowing ? Visibility.Visible : Visibility.Collapsed;
+            symbol.Stroke = glowing ? activeSymbol : idleSymbol;
         }
 
         public void DisplayProcess(int index, string action, string count, string window, RunPhase phase, string detail = null,
-            bool selected = false)
+            bool selected = false, int outputStrength = 0)
         {
             if (index >= processBadges.Count) return;
             var item = processBadges[index];
             item.Display(action, count, PhaseInk(phase));
             item.Select(selected);
+            item.SetOutputLight(outputStrength, Palette.Get(processColors[index]).Rim);
             Glass.Hint(item, action + " · " + (detail ?? window));
         }
 
@@ -764,6 +722,8 @@ namespace GlassClicker
     internal sealed class OrbBadge : FrameworkElement
     {
         private readonly Pen pill, rim, hover, selection;
+        private Pen outputRim, outputHalo;
+        private int outputStrength;
         private readonly Geometry arc, hitArea;
         private readonly Typeface typeface = new Typeface(Glass.Font, FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
         private readonly Point center;
@@ -850,6 +810,20 @@ namespace GlassClicker
             InvalidateVisual();
         }
 
+        public void SetOutputLight(int strength, Color color)
+        {
+            if (outputStrength == strength) return;
+            outputStrength = strength;
+            outputRim = outputHalo = null;
+            if (strength > 0)
+            {
+                var neutral = ((SolidColorBrush)rim.Brush).Color;
+                outputRim = RoundedPen(Glass.Fill(Glass.Mix(neutral, color, strength / 100.0)), pill.Thickness + 2.6);
+                outputHalo = RoundedPen(Glass.Fill(Glass.Tint(color, (byte)(.58 * strength))), pill.Thickness + 5.4);
+            }
+            InvalidateVisual();
+        }
+
         private Point PointAt(double radians)
         {
             return new Point(center.X + radius * Math.Cos(radians), center.Y + radius * Math.Sin(radians));
@@ -894,7 +868,8 @@ namespace GlassClicker
             }
             glyphs.AddRange(suffixGlyphs);
             textWidth += suffixWidth;
-            drawing.DrawGeometry(null, selected ? selection : IsMouseOver ? hover : rim, arc);
+            if (outputHalo != null) drawing.DrawGeometry(null, outputHalo, arc);
+            drawing.DrawGeometry(null, outputRim ?? (selected ? selection : IsMouseOver ? hover : rim), arc);
             drawing.DrawGeometry(null, pill, arc);
             var offset = -textWidth / 2;
             if (marker != null)

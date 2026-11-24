@@ -4,7 +4,7 @@ Windows 悬浮连点器。每枚悬浮球绑定一个窗口，独立设置键鼠
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/yipianmu/arcglow-clicker/releases/latest) 获取最新的 Windows 单文件，双击即可打开。适用于配有 .NET Framework 4.8 的 Windows 10 和 11。
+下载 [v0.1.0 Windows 单文件修正版](https://github.com/yipianmu/arcglow-clicker/releases/download/v0.1.0/ArcGlow-v0.1.0-repack.exe)，双击即可打开。适用于配有 .NET Framework 4.8 的 Windows 10 和 11。
 
 ## 快速上手
 
@@ -15,7 +15,7 @@ Windows 悬浮连点器。每枚悬浮球绑定一个窗口，独立设置键鼠
 
 控制面板默认在小球旁打开。需要固定在拖动后的位置时，可以在设置里打开「记住拖动后的面板位置」。`F9` 会恢复隐藏前正在使用的面板位置。
 
-收纳后，第一圈放四项，第二圈从正上方开始顺时针排五项。点击环上的计数可单独打开对应设置，点击中央可展开全部。长按键名可以悬停查看。
+收纳后，第一圈放四项，第二圈从正上方开始顺时针排五项。正在输出的任务会点亮自己在圆环上的弧段。点击弧段可单独打开对应设置，点击中央可展开全部。长按键名可以悬停查看。
 
 小球和目标窗口共用弧光颜色与强度。多枚连点同时输出到同一个窗口时，边缘会显示交融的颜色。设置里可以调强度、保存配置或关闭默认开启的调试自动暂停。紧急停止键默认是 `Ctrl+Shift+F10`。布局和配置保存在 `%LOCALAPPDATA%\GlassClicker`。
 

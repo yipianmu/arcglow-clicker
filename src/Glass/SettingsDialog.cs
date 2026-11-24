@@ -70,6 +70,33 @@ namespace GlassClicker
             };
             body.Children.Add(Row("悬浮界面始终置顶", topmost));
 
+            var counts = Glass.Button(host.ShowClickCounts ? "已开启" : "已关闭", Glass.White,
+                host.ShowClickCounts ? Glass.Blue : Glass.Muted);
+            AutomationProperties.SetName(counts, "切换显示连点次数");
+            counts.Click += (sender, args) =>
+            {
+                var enabled = !host.ShowClickCounts;
+                var error = host.ChangeShowClickCounts(enabled);
+                counts.Content = enabled ? "已开启" : "已关闭";
+                counts.Foreground = enabled ? Glass.Blue : Glass.Muted;
+                Notice(error ?? "", error != null);
+                UiSounds.Click();
+            };
+            body.Children.Add(Row("显示连点次数", counts));
+
+            var intervalUnit = Glass.Button(host.IntervalAsRate ? "次/秒" : "毫秒", Glass.White, Glass.Blue);
+            AutomationProperties.SetName(intervalUnit, "切换发送间隔单位");
+            Glass.Hint(intervalUnit, "在毫秒和每秒次数之间切换");
+            intervalUnit.Click += (sender, args) =>
+            {
+                var asRate = !host.IntervalAsRate;
+                var error = host.ChangeIntervalDisplay(asRate);
+                intervalUnit.Content = asRate ? "次/秒" : "毫秒";
+                Notice(error ?? "", error != null);
+                UiSounds.Click();
+            };
+            body.Children.Add(Row("发送间隔单位", intervalUnit));
+
             var automaticPause = Glass.Button(host.PauseOthersWhileEditing ? "已开启" : "已关闭", Glass.White,
                 host.PauseOthersWhileEditing ? Glass.Blue : Glass.Muted);
             AutomationProperties.SetName(automaticPause, "切换调试时自动暂停");

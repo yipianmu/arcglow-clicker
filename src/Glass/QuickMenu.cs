@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -57,17 +58,19 @@ namespace GlassClicker
                 if (source != null) Windows.SetNoActivate(source.Handle, true);
                 watch = new MousePressWatch(Dispatcher, (point, button) => DismissOutside(point));
             };
-            Closed += (sender, args) =>
-            {
-                if (watch != null) watch.Dispose();
-                watch = null;
-            };
+            Closed += (sender, args) => ReleaseWatch();
             PreviewKeyDown += (sender, args) =>
             {
                 if (args.Key != Key.Escape) return;
                 IsOpen = false;
                 args.Handled = true;
             };
+        }
+
+        private void ReleaseWatch()
+        {
+            if (watch != null) watch.Dispose();
+            watch = null;
         }
 
         internal void DismissOutside(ScreenPoint point)
@@ -92,7 +95,7 @@ namespace GlassClicker
                 StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
                 Width = 13, Height = 13, Stretch = Stretch.Uniform, IsHitTestVisible = false
             };
-            item.Click += (sender, args) => { IsOpen = false; action(); };
+            item.Click += (sender, args) => { ReleaseWatch(); IsOpen = false; action(); };
             Items.Add(item);
             return item;
         }
@@ -105,6 +108,7 @@ namespace GlassClicker
 
     internal sealed class MousePressWatch : IDisposable
     {
+        private static readonly List<MousePressWatch> Attached = new List<MousePressWatch>();
         private readonly Dispatcher dispatcher;
         private readonly Action<ScreenPoint, int> received;
         private readonly HookProc callback;
@@ -120,6 +124,12 @@ namespace GlassClicker
             this.watchRelease = watchRelease;
             callback = HandleMouse;
             hook = SetWindowsHookEx(14, callback, GetModuleHandle(null), 0);
+            if (hook != IntPtr.Zero) Attached.Add(this);
+        }
+
+        public static void DetachAll()
+        {
+            while (Attached.Count != 0) Attached[Attached.Count - 1].Dispose();
         }
 
         private IntPtr HandleMouse(int code, IntPtr message, IntPtr data)
@@ -142,6 +152,7 @@ namespace GlassClicker
             if (hook == IntPtr.Zero) return;
             UnhookWindowsHookEx(hook);
             hook = IntPtr.Zero;
+            Attached.Remove(this);
         }
 
         private delegate IntPtr HookProc(int code, IntPtr message, IntPtr data);

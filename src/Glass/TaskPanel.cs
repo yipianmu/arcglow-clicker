@@ -19,10 +19,12 @@ namespace GlassClicker
         private readonly ClickTask task;
         private readonly TextBlock targetName, message;
         private readonly Button tracking, shortcut, overlayKey, bind, start, stop, record;
+        private readonly FrameworkElement actionCheck;
         private readonly Border targetTile;
         private readonly StackPanel interval;
         private readonly ModeTrack repeat, hold;
         private readonly EdgeLight edge;
+        private Action updateIntervalField;
         private bool binding, captureSuspendsShortcut;
         public readonly Border Card;
         public readonly Button LocateButton;
@@ -65,13 +67,22 @@ namespace GlassClicker
             bind.Height = 34; bind.BorderBrush = Glass.MutedLine; bind.BorderThickness = new Thickness(1);
             bind.Click += (sender, args) => BeginBinding();
             Glass.On(action, bind, 0, 0);
+            actionCheck = Glass.Checkmark(Glass.Green);
+            actionCheck.HorizontalAlignment = HorizontalAlignment.Right;
+            actionCheck.VerticalAlignment = VerticalAlignment.Center;
+            actionCheck.Margin = new Thickness(0, 0, 9, 0);
+            actionCheck.IsHitTestVisible = false;
+            actionCheck.Opacity = 0;
+            Glass.On(action, actionCheck, 0, 0);
             record = Glass.Button("录制"); record.Height = 34;
             record.Click += (sender, args) => Record(false, value => SetAction(value, "已录制动作"));
             Glass.On(action, record, 0, 2); body.Children.Add(action);
 
             var times = Columns(new GridLength(1, GridUnitType.Star), new GridLength(8), new GridLength(1, GridUnitType.Star));
             times.Margin = new Thickness(0, 8, 0, 0);
-            interval = Labeled("发送间隔", Number(task.Interval, value => task.Interval = value, 10, 60000, "ms"));
+            interval = Labeled("发送间隔", Number(task.Interval, null, RepeatTiming.MinimumInterval,
+                RepeatTiming.MaximumInterval, "ms", isInterval: true));
+            RefreshIntervalDisplay();
             Glass.On(times, interval, 0, 0);
             var delay = Labeled("启动延时", Number(task.Delay, value => task.Delay = value, 0, 600000, "ms"));
             Glass.On(times, delay, 0, 2);
@@ -225,6 +236,12 @@ namespace GlassClicker
             if (message.Text == host.ShortcutText + " 正被占用") ShowMessage(host.ShortcutText + " 已可用");
         }
 
+        public void RefreshIntervalDisplay()
+        {
+            ((TextBlock)interval.Children[0]).Text = host.IntervalAsRate ? "每秒次数" : "发送间隔";
+            updateIntervalField();
+        }
+
         private void RefreshModes(bool animation)
         {
             var canHold = ActionSequence.Parse(task.Action).Steps.Length == 1;
@@ -262,6 +279,7 @@ namespace GlassClicker
             binding = true;
             host.SuspendShortcut();
             captureSuspendsShortcut = true;
+            actionCheck.BeginAnimation(OpacityProperty, null);
             bind.Content = "按键或点一下鼠标";
             if (FocusProtected)
             {
@@ -293,8 +311,10 @@ namespace GlassClicker
 
         private void BindMouse(object sender, MouseButtonEventArgs args)
         {
+            var source = args.OriginalSource as DependencyObject;
+            OverlayInput.ConfirmOutside(this, source);
             if (!binding) return;
-            if (!bind.IsMouseOver) { EndBinding(null); return; }
+            if (!OverlayInput.IsWithin(source, bind)) { EndBinding(null); return; }
             int key = args.ChangedButton == MouseButton.Left ? -1 : args.ChangedButton == MouseButton.Right ? -2 :
                 args.ChangedButton == MouseButton.Middle ? -3 : 0;
             if (key == 0) return;
@@ -324,10 +344,10 @@ namespace GlassClicker
 
         private void SetAction(string action, string feedback)
         {
-            task.Action = action;
+            host.SetAction(task, ActionSequence.Parse(action));
             bind.Content = DisplayAction(task.Action);
             RefreshModes(true);
-            host.ScheduleLayoutSave();
+            actionCheck.BeginAnimation(OpacityProperty, Confirmation(true));
             ShowMessage(feedback);
         }
 
@@ -355,14 +375,15 @@ namespace GlassClicker
             return text;
         }
 
-        private FrameworkElement Number(string value, Action<string> changed, int minimum, int maximum, string unit, bool integrated = false)
+        private FrameworkElement Number(string value, Action<string> changed, decimal minimum, decimal maximum, string unit,
+            bool integrated = false, bool isInterval = false)
         {
             var surface = Glass.Tile(integrated ? "#00000000" : "#FFFFFF", 9, new Thickness(4, 0, 4, 0));
             var restingBorder = integrated ? Brushes.Transparent : Glass.MutedLine;
             surface.Height = 34; surface.BorderBrush = restingBorder; surface.BorderThickness = new Thickness(1);
             var field = new TextBox { Text = value, Foreground = Glass.Ink, Background = Brushes.Transparent,
                 BorderThickness = new Thickness(0), FontSize = 12.5, FontFamily = Glass.Font, VerticalContentAlignment = VerticalAlignment.Center,
-                MaxLength = 7, Padding = new Thickness(4, 0, unit.Length == 0 ? 18 : 24, 0) };
+                MaxLength = isInterval ? 9 : 7, Padding = new Thickness(4, 0, unit.Length == 0 ? 18 : 24, 0) };
             var units = Glass.Text(unit, 10, Glass.Muted);
             units.HorizontalAlignment = HorizontalAlignment.Right;
             units.Margin = new Thickness(0, 0, 3, 0); units.IsHitTestVisible = false;
@@ -371,27 +392,44 @@ namespace GlassClicker
             checkmark.VerticalAlignment = VerticalAlignment.Center;
             checkmark.Margin = units.Margin;
             checkmark.Opacity = 0;
+            MousePressWatch outside = null;
+            Action stopWatching = () =>
+            {
+                if (outside == null) return;
+                outside.Dispose();
+                outside = null;
+            };
             var saved = value;
-            var range = minimum + "–" + maximum + (unit.Length == 0 ? "" : " " + unit);
+            var range = "";
+            Action updateRange = () =>
+            {
+                range = RepeatTiming.Format(minimum) + "–" + RepeatTiming.Format(maximum) + (unit.Length == 0 ? "" : " " + unit);
+                Glass.Hint(surface, "点击输入 " + range);
+            };
+            updateRange();
+            var asRate = false;
             surface.Cursor = Cursors.IBeam;
-            Glass.Hint(surface, "点击输入 " + range);
             Func<bool, bool> confirm = explicitEnter =>
             {
                 if (!explicitEnter && field.Text == saved) return true;
-                int number;
-                if (!Int32.TryParse(field.Text, NumberStyles.None, CultureInfo.InvariantCulture, out number) ||
-                    number < minimum || number > maximum)
+                decimal number;
+                var styles = isInterval ? NumberStyles.AllowDecimalPoint : NumberStyles.None;
+                var dot = field.Text.IndexOf('.');
+                if (!Decimal.TryParse(field.Text, styles, CultureInfo.InvariantCulture, out number) ||
+                    number < minimum || number > maximum || (dot >= 0 && field.Text.Length - dot - 1 > RepeatTiming.Precision))
                 {
                     ShowMessage("请输入 " + range, true);
                     if (explicitEnter) field.SelectAll();
                     else field.Text = saved;
                     return false;
                 }
-                field.Text = number.ToString(CultureInfo.InvariantCulture);
+                field.Text = RepeatTiming.Format(number);
                 if (field.Text != saved)
                 {
                     saved = field.Text;
-                    changed(saved);
+                    if (isInterval)
+                        host.SetInterval(task, asRate ? 1000m / number : number);
+                    else changed(saved);
                     host.ScheduleLayoutSave();
                 }
                 checkmark.BeginAnimation(OpacityProperty, Confirmation(true));
@@ -402,9 +440,22 @@ namespace GlassClicker
             field.IsKeyboardFocusedChanged += (sender, args) =>
             {
                 surface.BorderBrush = field.IsKeyboardFocused ? Glass.Blue : restingBorder;
-                if (!field.IsKeyboardFocused) { confirm(false); return; }
+                if (!field.IsKeyboardFocused)
+                {
+                    stopWatching();
+                    confirm(false);
+                    return;
+                }
                 checkmark.BeginAnimation(OpacityProperty, null);
                 units.BeginAnimation(OpacityProperty, null);
+                outside = new MousePressWatch(Dispatcher, (point, button) =>
+                {
+                    if (!field.IsKeyboardFocused || PresentationSource.FromVisual(surface) == null) return;
+                    var local = surface.PointFromScreen(new Point(point.X, point.Y));
+                    if (new Rect(0, 0, surface.ActualWidth, surface.ActualHeight).Contains(local)) return;
+                    confirm(false);
+                    Card.Focus();
+                });
             };
             field.PreviewKeyDown += (sender, args) =>
             {
@@ -425,6 +476,7 @@ namespace GlassClicker
             {
                 if (field.IsKeyboardFocusWithin) confirm(false);
             };
+            Closed += (sender, args) => stopWatching();
             surface.PreviewMouseLeftButtonDown += (sender, args) =>
             {
                 if (!FocusProtected || !field.IsEnabled) return;
@@ -437,8 +489,26 @@ namespace GlassClicker
                     if (!editing) return;
                     checkmark.BeginAnimation(OpacityProperty, null);
                     units.BeginAnimation(OpacityProperty, null);
-                })) ShowMessage("暂时无法输入，请在窗口模式下重试。", true);
+                }, allowDecimal: isInterval)) ShowMessage("暂时无法输入，请在窗口模式下重试。", true);
             };
+            if (isInterval)
+            {
+                updateIntervalField = () =>
+                {
+                    if (OverlayInput.Editing(surface)) OverlayInput.End(this, true);
+                    if (field.IsKeyboardFocused) { confirm(false); Card.Focus(); }
+                    asRate = host.IntervalAsRate;
+                    minimum = asRate ? RepeatTiming.MinimumRate : RepeatTiming.MinimumInterval;
+                    maximum = asRate ? RepeatTiming.MaximumRate : RepeatTiming.MaximumInterval;
+                    units.Text = unit = asRate ? "次/秒" : "ms";
+                    field.Padding = new Thickness(4, 0, asRate ? 35 : 24, 0);
+                    decimal milliseconds;
+                    saved = field.Text = Decimal.TryParse(task.Interval, NumberStyles.AllowDecimalPoint,
+                        CultureInfo.InvariantCulture, out milliseconds) && milliseconds > 0
+                        ? RepeatTiming.Format(asRate ? 1000m / milliseconds : milliseconds) : task.Interval;
+                    updateRange();
+                };
+            }
             var contents = new Grid();
             contents.Children.Add(field);
             contents.Children.Add(units);

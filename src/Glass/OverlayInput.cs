@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 
 namespace GlassClicker
@@ -53,9 +54,28 @@ namespace GlassClicker
 
         public static bool Editing(FrameworkElement region) { return current != null && current.region == region; }
 
+        public static bool IsWithin(DependencyObject source, FrameworkElement region)
+        {
+            for (var item = source; item != null; item = item is Visual
+                ? VisualTreeHelper.GetParent(item) : LogicalTreeHelper.GetParent(item))
+                if (item == region) return true;
+            return false;
+        }
+
+        public static void ConfirmOutside(GlassWindow owner, DependencyObject source)
+        {
+            if (current != null && current.owner == owner && !IsWithin(source, current.region))
+                current.Finish(true);
+        }
+
         public static void End(GlassWindow owner, bool commit)
         {
             if (current != null && current.owner == owner) current.Finish(commit);
+        }
+
+        public static void CommitPending()
+        {
+            if (current != null) current.Finish(true);
         }
 
         private void OwnerClosed(object sender, EventArgs args) { Finish(true); }
@@ -118,29 +138,30 @@ namespace GlassClicker
         }
 
         public static bool EditNumber(GlassWindow owner, FrameworkElement region, TextBox field, Func<bool, bool> confirm,
-            Action<bool> editing = null)
+            Action<bool> editing = null, bool allowDecimal = false)
         {
             var before = field.Text;
-            if (!Begin(owner, region, NumberKey, (key, mods) =>
+            if (!Begin(owner, region, (key, mods) => NumberKey(key, mods, allowDecimal), (key, mods) =>
             {
                 if (key == 0x0D) { if (confirm(true)) End(owner, false); return; }
                 if (key == 0x1B) { field.Text = before; End(owner, false); return; }
-                Edit(field, key, mods);
+                Edit(field, key, mods, allowDecimal);
             }, commit => { if (commit) confirm(false); if (editing != null) editing(false); })) return false;
             field.SelectAll();
             if (editing != null) editing(true);
             return true;
         }
 
-        private static bool NumberKey(int key, ModifierKeys mods)
+        private static bool NumberKey(int key, ModifierKeys mods, bool allowDecimal)
         {
             if (mods == ModifierKeys.Control) return key == 'A' || key == 'V' || key == 'C';
             if (mods != ModifierKeys.None && mods != ModifierKeys.Shift) return false;
             return key >= 0x30 && key <= 0x39 || key >= 0x60 && key <= 0x69 ||
+                allowDecimal && (key == 0x6E || key == 0xBE) ||
                 key == 0x08 || key == 0x2E || key == 0x25 || key == 0x27 || key == 0x23 || key == 0x24 || key == 0x0D || key == 0x1B;
         }
 
-        private static void Edit(TextBox field, int key, ModifierKeys mods)
+        private static void Edit(TextBox field, int key, ModifierKeys mods, bool allowDecimal)
         {
             var start = field.SelectionStart;
             var size = field.SelectionLength;
@@ -154,7 +175,8 @@ namespace GlassClicker
                     else if (key == 'V')
                     {
                         var text = Clipboard.GetText();
-                        if (text.Length > 0 && text.Length <= field.MaxLength && System.Linq.Enumerable.All(text, c => c >= '0' && c <= '9'))
+                        if (text.Length > 0 && text.Length <= field.MaxLength &&
+                            System.Linq.Enumerable.All(text, c => c >= '0' && c <= '9' || allowDecimal && c == '.'))
                             Replace(field, start, size, text);
                     }
                 }
@@ -169,6 +191,8 @@ namespace GlassClicker
                 case 0x27: field.Select(size == 0 ? Math.Min(field.Text.Length, end + 1) : end, 0); return;
                 case 0x23: field.Select(field.Text.Length, 0); return;
                 case 0x24: field.Select(0, 0); return;
+                case 0x6E:
+                case 0xBE: Replace(field, start, size, "."); return;
             }
             var digit = key >= 0x60 ? (char)('0' + key - 0x60) : (char)key;
             Replace(field, start, size, digit.ToString());

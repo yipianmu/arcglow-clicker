@@ -30,7 +30,6 @@ namespace GlassClicker
         public int IntervalVariation, RunSeconds;
         public bool Infinite = true, ContinuousHold, Tracking;
         public string Action = "左键", Interval = "100", Delay = "0", Hold = "0", Count = "100";
-        public string RunningAction;
         public TargetBinding OutputTarget { get { return Worker.State.HasSession ? RunningTarget : Target; } }
         public string TargetName { get { return Target == null ? "未选择窗口" : Target.Name; } }
         public bool OutputActive
@@ -44,9 +43,11 @@ namespace GlassClicker
 
         public SavedJob Snapshot(bool starting)
         {
-            int interval, delay, hold;
+            decimal interval;
+            int delay, hold;
             long count;
-            if (!Int32.TryParse(Interval, out interval) || interval < 10 || interval > 60000)
+            if (!Decimal.TryParse(Interval, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out interval) ||
+                interval < RepeatTiming.MinimumInterval || interval > RepeatTiming.MaximumInterval)
             {
                 if (!ContinuousHold) throw new FormatException("发送间隔请输入 10–60000 ms。");
                 interval = 100;
@@ -151,6 +152,8 @@ namespace GlassClicker
         public bool HasRunningJobs { get { return tasks.Any(task => task.Worker.State.HasSession); } }
         public bool LocatorVisible { get { return locator != null; } }
         public bool PauseOthersWhileEditing { get { return preferences.PauseOthersWhileEditing; } }
+        public bool ShowClickCounts { get { return preferences.ShowClickCounts; } }
+        public bool IntervalAsRate { get { return preferences.IntervalAsRate; } }
         public bool RememberPanelPosition { get { return preferences.RememberPanelPosition; } }
         public bool RestoreLayoutOnStart { get { return preferences.RestoreLayoutOnStart; } }
         public bool AlwaysOnTop { get { return preferences.AlwaysOnTop; } }
@@ -541,6 +544,22 @@ namespace GlassClicker
             ScheduleLayoutSave();
         }
 
+        public void SetAction(ClickTask task, ActionSequence action)
+        {
+            var label = action.Text;
+            if (task.Action == label) return;
+            task.Action = label;
+            task.Worker.SwitchAction(action);
+            ScheduleLayoutSave();
+        }
+
+        public void SetInterval(ClickTask task, decimal milliseconds)
+        {
+            milliseconds = Math.Round(milliseconds, 6);
+            task.Interval = RepeatTiming.Store(milliseconds);
+            task.Worker.SwitchInterval((double)milliseconds);
+        }
+
         private void Arm(ClickTask task)
         {
             if (tracking != null) tracking.Tracking = false;
@@ -597,7 +616,7 @@ namespace GlassClicker
                 if (saved.EditorLeft.HasValue && saved.EditorTop.HasValue)
                     task.EditorHome = new ScreenPoint(saved.EditorLeft.Value, saved.EditorTop.Value);
                 task.Action = saved.Action;
-                task.Interval = saved.Interval.ToString(CultureInfo.InvariantCulture);
+                task.Interval = RepeatTiming.Store(saved.Interval);
                 task.Delay = saved.Delay.ToString(CultureInfo.InvariantCulture);
                 task.Hold = saved.Hold.ToString(CultureInfo.InvariantCulture);
                 task.ContinuousHold = saved.ContinuousHold;
@@ -1273,12 +1292,9 @@ namespace GlassClicker
             {
                 var job = choices[i];
                 var task = batch[i];
-                if (task.Worker.Start(task.Target, ActionSequence.Parse(job.Action), job.Interval, job.Delay,
+                if (task.Worker.Start(task.Target, ActionSequence.Parse(job.Action), (double)job.Interval, job.Delay,
                     job.Infinite ? 0 : job.Count, origin, job.Hold, job.ContinuousHold, job.IntervalVariation, job.RunSeconds, ShouldPauseForEditing(task)))
-                {
                     task.RunningTarget = task.Target;
-                    task.RunningAction = job.Action;
-                }
             }
             QueueOutlineLayout();
             RefreshLabels();
@@ -1545,6 +1561,21 @@ namespace GlassClicker
         {
             preferences.PauseOthersWhileEditing = enabled;
             UpdateEditingPause();
+            return SaveSettings();
+        }
+
+        public string ChangeShowClickCounts(bool enabled)
+        {
+            preferences.ShowClickCounts = enabled;
+            trayRefresh = -1000;
+            RefreshLabels();
+            return SaveSettings();
+        }
+
+        public string ChangeIntervalDisplay(bool asRate)
+        {
+            preferences.IntervalAsRate = asRate;
+            if (panel != null) panel.RefreshIntervalDisplay();
             return SaveSettings();
         }
 
@@ -1986,18 +2017,20 @@ namespace GlassClicker
         {
             var outputEdge = statusEdge;
             var activeColors = outputEdge == null ? null : new List<Color>();
+            var showCounts = ShowClickCounts;
             long total = 0;
             for (var i = 0; i < tasks.Count; i++)
             {
                 var task = tasks[i]; var state = task.Worker.State;
                 total += state.Count;
                 var keys = state.Phase == RunPhase.Active && state.Detail != null ? state.Detail :
-                    ShortAction(state.HasSession ? task.RunningAction ?? task.Action : task.Action);
-                var count = state.Holding ? "按住中" : state.Count + " 次";
+                    ShortAction(task.Action);
+                var phase = !showCounts && state.Phase == RunPhase.Active ? "连点中" : PhaseText(state);
+                var count = showCounts ? (state.Holding ? "按住中" : state.Count + " 次") : phase;
                 var target = task.OutputTarget;
                 var destination = target == null ? "未绑定窗口" : target.Name;
-                var orbitCount = state.Holding ? count : CompactCount(state.Count);
-                var detail = destination + " · " + count + (state.Phase == RunPhase.Paused ? " · " + PhaseText(state) : "");
+                var orbitCount = showCounts && !state.Holding ? CompactCount(state.Count) : count;
+                var detail = destination + " · " + count + (showCounts && state.Phase == RunPhase.Paused ? " · " + phase : "");
                 var lit = task.OutputActive;
                 if (lit && activeColors != null) activeColors.Add(Palette.Get(task.Color).Rim);
                 if (task.Orb.IsVisible)
@@ -2009,7 +2042,7 @@ namespace GlassClicker
                     panel != null && panel.Task == task, lit ? OutlineStrength : 0);
                 ProcessRow row;
                 if (!processRows.TryGetValue(task, out row)) continue;
-                var summary = keys + " · " + count + (state.Holding ? "" : " · " + PhaseText(state));
+                var summary = keys + " · " + count + (showCounts && !state.Holding ? " · " + phase : "");
                 if (row.Summary.Text != summary) row.Summary.Text = summary;
                 if (row.Target.Text != destination)
                 {
@@ -2042,7 +2075,8 @@ namespace GlassClicker
             if (clock.ElapsedMilliseconds - trayRefresh > 500)
             {
                 trayRefresh = clock.ElapsedMilliseconds;
-                tray.Text = hidden ? Brand + " · 单击显示" : Running ? Brand + " · 已发送 " + total + " 次" : Brand + " · 连点器";
+                var output = showCounts ? "已发送 " + total + " 次" : "连点中";
+                tray.Text = hidden ? Brand + " · 单击显示" : Running ? Brand + " · " + output : Brand + " · 连点器";
             }
         }
 
@@ -2225,11 +2259,16 @@ namespace GlassClicker
 
         private void Quit()
         {
+            if (exiting) return;
             exiting = true;
+            // Low-level hooks must leave before this dispatcher saves files or shuts down.
+            MousePressWatch.DetachAll();
+            OverlayInput.CommitPending();
+            if (panel != null && panel.IsKeyboardFocusWithin) Keyboard.ClearFocus();
+            StopAll();
             if (settingsSaveTimer.IsEnabled) SaveSettings();
             RememberCurrentLayout();
             HideOrbs();
-            StopAll();
             app.Shutdown();
         }
 
@@ -2237,6 +2276,8 @@ namespace GlassClicker
         {
             if (disposed) return;
             disposed = true;
+            MousePressWatch.DetachAll();
+            OverlayInput.CommitPending();
             StopAll(); frames.Stop(); locatorPreview.Stop(); SetRendering(false); ReleaseShortcut();
             if (settingsSaveTimer.IsEnabled) SaveSettings();
             if (emergencyRegistered) UnregisterHotKey(messages.Handle, EmergencyKeyId);

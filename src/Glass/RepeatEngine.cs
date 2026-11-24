@@ -27,10 +27,13 @@ namespace GlassClicker
 
     internal sealed class RepeatWorker
     {
+        private const int FirstBusyRetry = 40, MaxBusyRetry = 240;
         private readonly object sync = new object();
         private CancellationTokenSource active;
-        private ManualResetEvent pause, retarget;
-        private TargetBinding liveTarget, pendingTarget;
+        private ManualResetEvent pause, changes;
+        private TargetBinding requestedTarget;
+        private ActionSequence requestedAction;
+        private double requestedInterval;
         private bool manuallyPaused, editingPaused;
         private bool stopRequested;
         private long pausedAt;
@@ -38,7 +41,7 @@ namespace GlassClicker
         private volatile RunState state = new RunState(RunPhase.Idle, 0);
         public RunState State { get { return state; } }
 
-        public bool Start(TargetBinding target, ActionSequence sequence, int interval, int delay, long limit, long origin,
+        public bool Start(TargetBinding target, ActionSequence sequence, double interval, int delay, long limit, long origin,
             int hold = 0, bool continuousHold = false, int variation = 0, int runSeconds = 0, bool pauseForEditing = false)
         {
             if (continuousHold && sequence.Steps.Length != 1) return false;
@@ -47,15 +50,17 @@ namespace GlassClicker
                 if (active != null) return false;
                 var cancellation = new CancellationTokenSource();
                 active = cancellation;
-                liveTarget = target;
+                requestedTarget = target;
+                requestedAction = sequence;
+                requestedInterval = interval;
                 pause = new ManualResetEvent(pauseForEditing);
-                retarget = new ManualResetEvent(false);
+                changes = new ManualResetEvent(false);
                 manuallyPaused = false;
                 editingPaused = pauseForEditing;
                 pausedAt = origin;
                 stopRequested = false;
                 state = new RunState(RunPhase.Delay, 0);
-                runThread = new Thread(() => Run(sequence, interval, delay, limit, origin, continuousHold ? -1 : hold, variation, cancellation))
+                runThread = new Thread(() => Run(target, sequence, interval, delay, limit, origin, hold, continuousHold, variation, cancellation))
                     { IsBackground = true, Name = "Window repetition" };
                 if (runSeconds > 0) cancellation.CancelAfter(delay + runSeconds * 1000);
                 runThread.Start();
@@ -115,20 +120,30 @@ namespace GlassClicker
             lock (sync)
             {
                 if (active == null || active.IsCancellationRequested) return false;
-                if (target == (pendingTarget ?? liveTarget)) return true;
-                pendingTarget = target;
-                retarget.Set();
+                if (target == requestedTarget) return true;
+                requestedTarget = target;
+                changes.Set();
                 return true;
             }
         }
 
-        private void ApplyWindowChange()
+        public void SwitchAction(ActionSequence action)
         {
             lock (sync)
             {
-                liveTarget = pendingTarget;
-                pendingTarget = null;
-                retarget.Reset();
+                if (active == null || active.IsCancellationRequested || action == requestedAction) return;
+                requestedAction = action;
+                changes.Set();
+            }
+        }
+
+        public void SwitchInterval(double interval)
+        {
+            lock (sync)
+            {
+                if (active == null || active.IsCancellationRequested || interval == requestedInterval) return;
+                requestedInterval = interval;
+                changes.Set();
             }
         }
 
@@ -157,12 +172,14 @@ namespace GlassClicker
             lock (sync) Monitor.PulseAll(sync);
         }
 
-        private void Run(ActionSequence sequence, int interval, int delay, long limit,
-            long origin, int hold, int variation, CancellationTokenSource cancellation)
+        private void Run(TargetBinding target, ActionSequence sequence, double interval, int delay, long limit,
+            long origin, int timedHold, bool continuousHold, int variation, CancellationTokenSource cancellation)
         {
             var token = cancellation.Token;
             long count = 0;
             int step = 0;
+            var hold = continuousHold ? -1 : timedHold;
+            var busyRetry = FirstBusyRetry;
             var completed = false;
             var phase = RunPhase.Delay;
             var due = origin + WaitClock.Ticks(delay);
@@ -170,43 +187,76 @@ namespace GlassClicker
             var random = variation == 0 ? null : new Random(unchecked((int)Stopwatch.GetTimestamp()));
             try
             {
-                using (var clock = new WaitClock(token, pause, retarget))
+                using (var clock = new WaitClock(token, pause, changes))
                 {
                     var sender = new WindowSender(clock);
-                    Action<string> onHold = null;
-                    if (hold < 0) onHold = chord => state = new RunState(RunPhase.Active, count = 1, chord, true);
-                    if (hold > 0) onHold = chord => state = new RunState(RunPhase.Active, count, chord);
+                    Action<string> onHold = chord =>
+                    {
+                        if (hold < 0)
+                        {
+                            phase = RunPhase.Active;
+                            count = Math.Max(count, 1);
+                        }
+                        state = new RunState(RunPhase.Active, count, chord, hold < 0);
+                    };
                     try
                     {
                         while (!clock.Cancelled)
                         {
-                            if (clock.Retargeting)
-                            {
-                                sender.Finish();
-                                ApplyWindowChange();
-                                if (phase == RunPhase.Waiting || hold < 0) due = Stopwatch.GetTimestamp();
-                                continue;
-                            }
                             if (clock.Paused)
                             {
                                 sender.Finish();
                                 WaitWhilePaused(token, ref due, ref cycleStart, count);
                                 continue;
                             }
+                            if (clock.Changing)
+                            {
+                                bool actionChanged, targetChanged;
+                                var previousInterval = interval;
+                                lock (sync)
+                                {
+                                    actionChanged = sequence != requestedAction;
+                                    targetChanged = target != requestedTarget;
+                                    sequence = requestedAction;
+                                    target = requestedTarget;
+                                    interval = requestedInterval;
+                                    changes.Reset();
+                                }
+                                if (actionChanged || targetChanged) busyRetry = FirstBusyRetry;
+                                if (actionChanged)
+                                {
+                                    step = 0;
+                                    if (hold < 0 && sequence.Steps.Length > 1)
+                                    {
+                                        hold = timedHold;
+                                        if (limit > 0 && count >= limit) { completed = true; break; }
+                                    }
+                                    if (phase != RunPhase.Delay)
+                                    {
+                                        due = cycleStart = Stopwatch.GetTimestamp();
+                                        state = new RunState(phase, count, phase == RunPhase.Waiting ? state.Detail : null);
+                                    }
+                                }
+                                else if (targetChanged && (phase == RunPhase.Waiting || phase == RunPhase.Active && hold < 0))
+                                    due = Stopwatch.GetTimestamp();
+                                else if (previousInterval != interval && phase == RunPhase.Active && step == 0 && hold >= 0)
+                                    due = Math.Max(Stopwatch.GetTimestamp(), due + WaitClock.Ticks(interval - previousInterval));
+                                continue;
+                            }
                             if (!clock.Until(due)) continue;
                             ClickOutcome outcome;
-                            var target = liveTarget;
+                            long pressStarted = 0;
                             try
                             {
                                 var destination = target.Resolve();
                                 outcome = destination == null ? ClickOutcome.LostPoint :
-                                    sender.Send(target, destination, sequence.Steps[step], interval, hold, onHold);
+                                    sender.Send(target, destination, sequence.Steps[step], interval, hold, hold == 0 ? null : onHold, out pressStarted);
                             }
                             catch (System.ComponentModel.Win32Exception) { outcome = ClickOutcome.Blocked; }
                             catch (InvalidOperationException) { outcome = ClickOutcome.Wait; }
                             if (token.IsCancellationRequested) break;
                             var now = Stopwatch.GetTimestamp();
-                            if ((clock.Paused || clock.Retargeting) && (hold < 0 || outcome != ClickOutcome.Sent)) continue;
+                            if ((clock.Paused || clock.Changing) && (hold < 0 || outcome != ClickOutcome.Sent)) continue;
                             if (outcome != ClickOutcome.Sent)
                             {
                                 var message = outcome == ClickOutcome.LostPoint ? "等目标窗口恢复" : outcome == ClickOutcome.Busy ? "等窗口响应" :
@@ -214,10 +264,18 @@ namespace GlassClicker
                                 if (phase != RunPhase.Waiting || state.Detail != message)
                                     state = new RunState(RunPhase.Waiting, count, message);
                                 phase = RunPhase.Waiting;
-                                due = now + WaitClock.Ticks(outcome == ClickOutcome.Wait ? 35 : 550);
+                                var retry = 550;
+                                if (outcome == ClickOutcome.Busy)
+                                {
+                                    retry = busyRetry;
+                                    busyRetry = Math.Min(busyRetry * 2, MaxBusyRetry);
+                                }
+                                else if (outcome == ClickOutcome.Wait) retry = 35;
+                                due = now + WaitClock.Ticks(retry);
                                 continue;
                             }
-                            if (step == 0 && (phase != RunPhase.Active || cycleStart < now - WaitClock.Ticks(interval))) cycleStart = now;
+                            busyRetry = FirstBusyRetry;
+                            if (step == 0) cycleStart = pressStarted;
                             phase = RunPhase.Active;
                             if (++step < sequence.Steps.Length)
                             {
@@ -230,9 +288,8 @@ namespace GlassClicker
                             state = new RunState(phase, count);
                             if (limit > 0 && count >= limit) { completed = true; break; }
                             var spacing = WaitClock.Ticks(interval + (random == null ? 0 : random.Next(variation + 1)));
-                            cycleStart += spacing;
-                            if (cycleStart <= now) cycleStart = now + spacing;
-                            due = cycleStart;
+                            due = cycleStart + spacing;
+                            if (due <= now) due = now + spacing;
                         }
                     }
                     finally { sender.Finish(); }
@@ -246,13 +303,13 @@ namespace GlassClicker
                     state = new RunState(completed || timedOut ? RunPhase.Complete : RunPhase.Stopped, count,
                         timedOut ? "已到运行时限" : null);
                     active = null;
-                    liveTarget = null;
-                    pendingTarget = null;
+                    requestedTarget = null;
+                    requestedAction = null;
                     runThread = null;
                     pause.Dispose();
                     pause = null;
-                    retarget.Dispose();
-                    retarget = null;
+                    changes.Dispose();
+                    changes = null;
                     cancellation.Dispose();
                 }
             }
@@ -263,23 +320,23 @@ namespace GlassClicker
     {
         private readonly CancellationToken token;
         private readonly WaitHandle pause;
-        private readonly WaitHandle retarget;
+        private readonly WaitHandle changes;
         private readonly WaitHandle timer;
         private readonly WaitHandle[] interrupts;
         private readonly WaitHandle[] sources;
-        public WaitClock(CancellationToken token, WaitHandle pause, WaitHandle retarget)
+        public WaitClock(CancellationToken token, WaitHandle pause, WaitHandle changes)
         {
             this.token = token;
             this.pause = pause;
-            this.retarget = retarget;
-            interrupts = new[] { token.WaitHandle, pause, retarget };
+            this.changes = changes;
+            interrupts = new[] { token.WaitHandle, pause, changes };
             try
             {
                 var native = CreateWaitableTimerEx(IntPtr.Zero, null, 2, 0x001F0003);
                 if (native != IntPtr.Zero)
                 {
                     timer = new TimerHandle(native);
-                    sources = new[] { token.WaitHandle, pause, retarget, timer };
+                    sources = new[] { token.WaitHandle, pause, changes, timer };
                 }
             }
             catch (EntryPointNotFoundException) { }
@@ -288,8 +345,8 @@ namespace GlassClicker
         public static long Ticks(double milliseconds) { return (long)(milliseconds * Stopwatch.Frequency / 1000.0); }
         public bool Cancelled { get { return token.IsCancellationRequested; } }
         public bool Paused { get { return pause.WaitOne(0); } }
-        public bool Retargeting { get { return retarget.WaitOne(0); } }
-        public bool Interrupted { get { return Cancelled || Paused || Retargeting; } }
+        public bool Changing { get { return changes.WaitOne(0); } }
+        public bool Interrupted { get { return Cancelled || Paused || Changing; } }
 
         public bool Until(long deadline)
         {
@@ -338,14 +395,16 @@ namespace GlassClicker
 
         public WindowSender(WaitClock clock) { this.clock = clock; }
 
-        public ClickOutcome Send(TargetBinding target, TargetBinding.Handle current, ActionSequence.Step step, int interval,
-            int hold, Action<string> onHold)
+        public ClickOutcome Send(TargetBinding target, TargetBinding.Handle current, ActionSequence.Step step, double interval,
+            int hold, Action<string> onHold, out long started)
         {
+            started = 0;
             if (!ReleasePending()) return ClickOutcome.Blocked;
             var keyboard = target.KeyDestination(current);
             var mouse = IntPtr.Zero;
             var point = default(ScreenPoint);
-            if (step.Inputs.Any(key => key < 0) && !target.MouseDestination(current, out mouse, out point)) return ClickOutcome.LostPoint;
+            var hasMouse = step.Inputs.Any(key => key < 0);
+            if (hasMouse && !target.MouseDestination(current, out mouse, out point)) return ClickOutcome.LostPoint;
             if (clock.Interrupted || !current.IsCurrent) return ClickOutcome.Wait;
             var now = Stopwatch.GetTimestamp();
             if (keyboard != readyKey || mouse != readyMouse || now >= readyUntil)
@@ -366,6 +425,7 @@ namespace GlassClicker
                 if (clock.Interrupted || !current.IsCurrent) return ClickOutcome.Wait;
                 HashSet<int> held;
                 if (gate.Held.TryGetValue(current.Window, out held) && Conflicts(held, step.Inputs)) return ClickOutcome.Wait;
+                started = Stopwatch.GetTimestamp();
                 Press(current, step.Inputs, keyboard, mouse, point);
                 if (pressed != 0)
                 {
@@ -394,7 +454,9 @@ namespace GlassClicker
                     }
                     else
                     {
-                        var duration = hold > 0 ? hold : Math.Min(22, Math.Max(2, interval / 3));
+                        var duration = hold > 0 ? hold : hasMouse
+                            ? Math.Min(22, Math.Max(2, interval / 3))
+                            : Math.Min(35, Math.Max(2, interval / 2));
                         clock.Until(Stopwatch.GetTimestamp() + WaitClock.Ticks(duration));
                     }
                 }
@@ -502,6 +564,7 @@ namespace GlassClicker
         private static ClickOutcome Probe(IntPtr window)
         {
             IntPtr discarded;
+            SetLastError(0);
             if (SendMessageTimeout(window, 0, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0002 | 0x0020, 115, out discarded) != IntPtr.Zero)
                 return ClickOutcome.Sent;
             return Marshal.GetLastWin32Error() == 5 ? ClickOutcome.Blocked : ClickOutcome.Busy;
@@ -531,5 +594,6 @@ namespace GlassClicker
             IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr SendMessageTimeout(
             IntPtr window, uint message, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
+        [DllImport("kernel32.dll")] private static extern void SetLastError(uint error);
     }
 }

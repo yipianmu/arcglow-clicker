@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Web.Script.Serialization;
@@ -32,7 +33,7 @@ namespace GlassClicker
     internal sealed class SavedJob
     {
         public string Action { get; set; }
-        public int Interval { get; set; }
+        public decimal Interval { get; set; }
         public int Delay { get; set; }
         public int Hold { get; set; }
         public bool ContinuousHold { get; set; }
@@ -59,6 +60,8 @@ namespace GlassClicker
         public bool RememberPanelPosition { get; set; }
         public bool RestoreLayoutOnStart { get; set; }
         public bool AlwaysOnTop { get; set; }
+        public bool ShowClickCounts { get; set; }
+        public bool IntervalAsRate { get; set; }
         public bool InterfaceSounds { get; set; }
         public int? InterfaceSoundVolume { get; set; }
         public int OutlineStrength { get; set; }
@@ -69,8 +72,19 @@ namespace GlassClicker
             PauseOthersWhileEditing = true;
             RestoreLayoutOnStart = true;
             AlwaysOnTop = true;
+            ShowClickCounts = true;
             OutlineStrength = 100;
         }
+    }
+
+    internal static class RepeatTiming
+    {
+        public const int Precision = 3;
+        public const decimal MinimumInterval = 10, MaximumInterval = 60000;
+        public const decimal MinimumRate = 0.017m, MaximumRate = 100m;
+
+        public static string Format(decimal value) { return value.ToString("0.###", CultureInfo.InvariantCulture); }
+        public static string Store(decimal milliseconds) { return milliseconds.ToString("0.######", CultureInfo.InvariantCulture); }
     }
 
     internal static class LayoutFile
@@ -87,7 +101,8 @@ namespace GlassClicker
             var colors = new HashSet<int>();
             foreach (var job in layout.Jobs)
             {
-                if (job == null || job.Interval < 10 || job.Interval > 60000 || job.Delay < 0 || job.Delay > 600000 ||
+                if (job == null || job.Interval < RepeatTiming.MinimumInterval || job.Interval > RepeatTiming.MaximumInterval ||
+                    job.Delay < 0 || job.Delay > 600000 ||
                     job.Hold < 0 || job.Hold > 60000 || job.IntervalVariation < 0 || job.IntervalVariation > MaxVariation ||
                     job.RunSeconds < 0 || job.RunSeconds > MaxRunSeconds ||
                     job.Count < 1 || job.Count > 9999999 || job.Color < 0 || job.Color >= MaxJobs || !colors.Add(job.Color))

@@ -12,6 +12,8 @@ namespace GlassClicker
         public string Shortcut { get; set; }
         public int? HubLeft { get; set; }
         public int? HubTop { get; set; }
+        public int? OutputLeft { get; set; }
+        public int? OutputTop { get; set; }
         public List<SavedJob> Jobs { get; set; }
     }
 
@@ -40,6 +42,7 @@ namespace GlassClicker
         public bool TutorialSeen { get; set; }
         public string EmergencyKey { get; set; }
         public bool PauseOthersWhileEditing { get; set; }
+        public bool RememberPanelPosition { get; set; }
         public int OutlineStrength { get; set; }
 
         public AppSettings()

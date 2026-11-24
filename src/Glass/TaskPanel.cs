@@ -34,7 +34,7 @@ namespace GlassClicker
             this.task = task;
             var palette = Palette.Get(task.Color);
             Card = Glass.Card(new Thickness(15, 12, 15, 11));
-            edge = new EdgeLight(Card, palette.Main);
+            edge = new EdgeLight(palette.Rim);
             Card.BorderBrush = edge.Brush;
             Card.BorderThickness = new Thickness(1.6);
             Card.Focusable = true;
@@ -188,7 +188,8 @@ namespace GlassClicker
             overlayKey.Visibility = host.OverlayKeyText == null ? Visibility.Collapsed : Visibility.Visible;
             Glass.Hint(overlayKey, "一键隐藏或显示连点器");
             var state = task.Worker.State;
-            edge.SetLit(task.OutputActive);
+            var showRim = task.OutputActive || !state.HasSession && task.Target != null && task.Target.Window != IntPtr.Zero;
+            edge.SetLit(host.OutlineStrength > 0 && showRim, host.OutlineStrength);
             start.Content = state.PausedForEditing ? "保持暂停" : state.Phase == RunPhase.Paused ? "继续这枚" : state.Running ? "暂停这枚" :
                 task.Tracking ? "等待选择窗口" : task.Target == null ? "先选择窗口" :
                 task.Target.Window == IntPtr.Zero ? "重新选择窗口" : "开始这枚";

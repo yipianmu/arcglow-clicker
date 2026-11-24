@@ -18,12 +18,13 @@ namespace GlassClicker
 {
     internal sealed class Palette
     {
-        public readonly Color Main, Accent;
+        public readonly Color Main, Accent, Rim;
         public readonly Brush Marker, Icon;
         private Palette(string main, string accent, string marker, string highlight)
         {
             Main = Glass.Color(main);
             Accent = Glass.Color(accent);
+            Rim = Glass.Mix(Glass.Color(marker), Main, .18);
             Marker = Glass.Fill(marker);
             Icon = Glass.IconBrush(marker, highlight);
         }
@@ -38,21 +39,50 @@ namespace GlassClicker
         public static Palette Get(int index) { return Colors[index % Colors.Length]; }
     }
 
+    internal struct RimBand
+    {
+        public readonly double From, To;
+        public readonly Color Tone;
+
+        private RimBand(double from, double to, Color tone) { From = from; To = to; Tone = tone; }
+
+        public static IEnumerable<RimBand> Along(Color[] colors)
+        {
+            if (colors.Length == 1) yield return new RimBand(0, 1, colors[0]);
+            if (colors.Length < 2) yield break;
+            var share = 1.0 / colors.Length;
+            var feather = Math.Min(.048, share * .22);
+            const int steps = 5;
+            for (var i = 0; i < colors.Length; i++)
+            {
+                var start = i * share;
+                var end = (i + 1) * share;
+                var previous = colors[(i + colors.Length - 1) % colors.Length];
+                var next = colors[(i + 1) % colors.Length];
+                var step = feather / steps;
+                for (var s = 0; s < steps; s++)
+                    yield return new RimBand(start + s * step, start + (s + 1) * step,
+                        Glass.Mix(previous, colors[i], .5 + .5 * (s + .5) / steps));
+                yield return new RimBand(start + feather, end - feather, colors[i]);
+                for (var s = 0; s < steps; s++)
+                    yield return new RimBand(end - feather + s * step, end - feather + (s + 1) * step,
+                        Glass.Mix(colors[i], next, .5 * (s + .5) / steps));
+            }
+        }
+    }
+
     internal sealed class EdgeLight
     {
-        private static readonly DoubleAnimation Pulse = MakePulse();
-        private readonly UIElement owner;
         private readonly LinearGradientBrush brush = new LinearGradientBrush { StartPoint = new Point(.1, 0), EndPoint = new Point(.9, 1) };
         private Color[] colors;
+        private double strength = 1;
         private bool lit;
         public Brush Brush { get { return brush; } }
 
-        public EdgeLight(UIElement owner, params Color[] colors)
+        public EdgeLight(params Color[] colors)
         {
-            this.owner = owner;
             this.colors = colors;
             RefreshColors();
-            owner.IsVisibleChanged += (sender, args) => RefreshPulse();
         }
 
         public void SetColors(Color[] next)
@@ -62,49 +92,34 @@ namespace GlassClicker
             if (lit) RefreshColors();
         }
 
-        public void SetLit(bool value)
+        public void SetLit(bool value, int percent = 100)
         {
-            if (value == lit) return;
+            var next = percent / 100.0;
+            if (value == lit && next == strength) return;
             lit = value;
+            strength = next;
             RefreshColors();
-            RefreshPulse();
-        }
-
-        private void RefreshPulse()
-        {
-            brush.BeginAnimation(System.Windows.Media.Brush.OpacityProperty, lit && owner.IsVisible ? Pulse : null);
         }
 
         private void RefreshColors()
         {
             brush.GradientStops.Clear();
-            if (!lit || colors.Length == 0)
+            var neutral = ((SolidColorBrush)Glass.MutedLine).Color;
+            if (!lit || colors.Length == 0 || strength == 0)
             {
-                var neutral = ((SolidColorBrush)Glass.MutedLine).Color;
                 brush.GradientStops.Add(new GradientStop(neutral, 0));
                 brush.GradientStops.Add(new GradientStop(neutral, 1));
                 return;
             }
             if (colors.Length == 1)
             {
-                brush.GradientStops.Add(new GradientStop(colors[0], 0));
-                brush.GradientStops.Add(new GradientStop(Glass.Mix(colors[0], Colors.White, .36), .48));
-                brush.GradientStops.Add(new GradientStop(colors[0], 1));
+                var color = Glass.Mix(neutral, colors[0], strength);
+                brush.GradientStops.Add(new GradientStop(color, 0));
+                brush.GradientStops.Add(new GradientStop(color, 1));
                 return;
             }
             for (var i = 0; i < colors.Length; i++)
-                brush.GradientStops.Add(new GradientStop(colors[i], (double)i / (colors.Length - 1)));
-        }
-
-        private static DoubleAnimation MakePulse()
-        {
-            var pulse = new DoubleAnimation(.58, 1, TimeSpan.FromMilliseconds(1500))
-            {
-                AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever,
-                EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
-            };
-            pulse.Freeze();
-            return pulse;
+                brush.GradientStops.Add(new GradientStop(Glass.Mix(neutral, colors[i], strength), (double)i / (colors.Length - 1)));
         }
     }
 
@@ -425,6 +440,10 @@ namespace GlassClicker
         private readonly TextBlock target;
         private readonly OrbBadge badge;
         private readonly EdgeLight edge;
+        private readonly Image groupedRim;
+        private readonly Brush idleSymbol, activeSymbol;
+        private Color[] rimColors = new Color[0];
+        private int rimStrength;
         private readonly Canvas bands;
         private readonly Border caption;
         private readonly List<OrbBadge> processBadges = new List<OrbBadge>();
@@ -455,23 +474,27 @@ namespace GlassClicker
                 VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 4, 0, 0), Cursor = Cursors.Hand,
                 RenderTransformOrigin = new Point(.5, .5), RenderTransform = new ScaleTransform(1, 1) };
             System.Windows.Automation.AutomationProperties.SetName(sphere, hub ? "展开连点任务" : "展开连点设置");
-            edge = new EdgeLight(sphere, palette.Main);
+            edge = new EdgeLight(palette.Rim);
             halo = new Ellipse { Stroke = edge.Brush, StrokeThickness = 3.4, Margin = new Thickness(-1.4),
                 Opacity = .25, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
             sphere.Children.Add(halo);
-            sphere.Children.Add(new Ellipse { Fill = Glass.White, Stroke = edge.Brush, StrokeThickness = 1.7 });
+            sphere.Children.Add(new Ellipse { Fill = Glass.White, Stroke = hub ? Glass.MutedLine : edge.Brush, StrokeThickness = 1.7 });
             if (hub)
             {
-                addGlow = Glass.LineIcon(AddGlyph, AddInk, 34, 34, 6);
-                addGlow.Opacity = .75;
-                addGlow.Effect = new System.Windows.Media.Effects.BlurEffect { Radius = 9 };
+                groupedRim = new Image { Width = diameter, Height = diameter, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
+                sphere.Children.Add(groupedRim);
+                addGlow = Glass.LineIcon(AddGlyph, AddInk, 30, 30, 4.5);
+                addGlow.Opacity = .38;
+                addGlow.Effect = new System.Windows.Media.Effects.BlurEffect { Radius = 7 };
                 addGlow.Visibility = Visibility.Collapsed;
                 sphere.Children.Add(addGlow);
                 IsVisibleChanged += (sender, args) => UpdateAddGlow();
             }
+            idleSymbol = hub ? CollectorInk : palette.Icon;
+            activeSymbol = Glass.Fill(palette.Rim);
             symbol = new Path { Data = Geometry.Parse(hub ? CollectorGlyph : Glass.PointGlyph),
                 StrokeThickness = 2, StrokeLineJoin = PenLineJoin.Round, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
-                Stroke = hub ? CollectorInk : palette.Icon, Stretch = Stretch.Uniform, Width = 21, Height = 21, IsHitTestVisible = false };
+                Stroke = idleSymbol, Stretch = Stretch.Uniform, Width = 21, Height = 21, IsHitTestVisible = false };
             sphere.Children.Add(symbol);
             statusLight = new Ellipse { Width = 7, Height = 7,
                 HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 9, 9),
@@ -531,7 +554,6 @@ namespace GlassClicker
             if (bands == null || processColors != null && processColors.SequenceEqual(colors)) return;
             processColors = (int[])colors.Clone();
             var adding = colors.Length == 0;
-            edge.SetColors(colors.Length == 0 ? new[] { Palette.Get(0).Main } : colors.Select(color => Palette.Get(color).Main).ToArray());
             symbol.Data = Geometry.Parse(adding ? AddGlyph : CollectorGlyph);
             symbol.Stroke = adding ? AddInk : CollectorInk;
             symbol.Width = symbol.Height = adding ? 24 : 21;
@@ -573,7 +595,7 @@ namespace GlassClicker
 
         private static DoubleAnimation CreateAddPulse()
         {
-            var pulse = new DoubleAnimation(.50, .88, TimeSpan.FromMilliseconds(1450))
+            var pulse = new DoubleAnimation(.25, .46, TimeSpan.FromMilliseconds(1650))
             {
                 AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever,
                 EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
@@ -615,11 +637,58 @@ namespace GlassClicker
             if (target.Text != window) { target.Text = window; Glass.Hint(caption, window); }
         }
 
-        public void ShowOutputLight(bool active, Color[] colors = null)
+        public void ShowOutputLight(bool active, int strength, Color[] colors = null)
         {
             if (colors != null && colors.Length > 0) edge.SetColors(colors);
-            edge.SetLit(active);
-            halo.Visibility = statusLight.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
+            var glowing = active && strength > 0;
+            edge.SetLit(glowing, strength);
+            statusLight.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
+            halo.Visibility = glowing && groupedRim == null ? Visibility.Visible : Visibility.Collapsed;
+            if (groupedRim == null) symbol.Stroke = glowing ? activeSymbol : idleSymbol;
+            else ShowGroupedRim(glowing ? colors : null, strength);
+        }
+
+        private void ShowGroupedRim(Color[] colors, int strength)
+        {
+            if (colors == null || colors.Length == 0)
+            {
+                groupedRim.Visibility = Visibility.Collapsed;
+                return;
+            }
+            groupedRim.Visibility = Visibility.Visible;
+            if (strength == rimStrength && rimColors.SequenceEqual(colors)) return;
+            rimStrength = strength;
+            rimColors = (Color[])colors.Clone();
+            var artwork = new DrawingGroup();
+            var center = new Point(diameter / 2, diameter / 2);
+            var radius = center.X - 2.25;
+            using (var drawing = artwork.Open())
+            {
+                drawing.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, diameter, diameter));
+                var bands = RimBand.Along(colors).ToArray();
+                for (var pass = 0; pass < 2; pass++)
+                    foreach (var band in bands)
+                    {
+                        var alpha = (byte)Math.Round((pass == 0 ? 53 : 242) * strength / 100.0);
+                        var pen = new Pen(Glass.Fill(Glass.Tint(band.Tone, alpha)), pass == 0 ? 4.5 : 1.9);
+                        if (colors.Length == 1) drawing.DrawEllipse(null, pen, center, radius, radius);
+                        else
+                        {
+                            var start = band.From * 2 * Math.PI - Math.PI / 2;
+                            var end = band.To * 2 * Math.PI - Math.PI / 2;
+                            var geometry = new StreamGeometry();
+                            using (var figure = geometry.Open())
+                            {
+                                figure.BeginFigure(new Point(center.X + radius * Math.Cos(start), center.Y + radius * Math.Sin(start)), false, false);
+                                figure.ArcTo(new Point(center.X + radius * Math.Cos(end), center.Y + radius * Math.Sin(end)),
+                                    new Size(radius, radius), 0, end - start > Math.PI, SweepDirection.Clockwise, true, false);
+                            }
+                            drawing.DrawGeometry(null, pen, geometry);
+                        }
+                    }
+            }
+            artwork.Freeze();
+            groupedRim.Source = new DrawingImage(artwork);
         }
 
         public void DisplayProcess(int index, string action, string count, string window, RunPhase phase, string detail = null)

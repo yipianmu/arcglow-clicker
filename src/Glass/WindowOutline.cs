@@ -137,12 +137,13 @@ namespace GlassClicker
             for (var i = 1; i < points.Count; i++) lengths[i] = lengths[i - 1] + (points[i] - points[i - 1]).Length;
             var perimeter = lengths[lengths.Length - 1];
             var result = new List<Segment>();
-            var share = perimeter / colors.Length;
-            var gap = colors.Length == 1 ? 0 : Math.Min(4.5 * scale, share * .15);
-            for (var i = 0; i < colors.Length; i++)
+            var tones = colors.Select(color => Palette.Get(color).Rim).ToArray();
+            var widths = new[] { 15.0, 9.0, 3.8 };
+            var alphas = new byte[] { 47, 102, 248 };
+            foreach (var band in RimBand.Along(tones))
             {
-                var from = share * i + gap;
-                var to = share * (i + 1) - gap;
+                var from = perimeter * band.From;
+                var to = perimeter * band.To;
                 var first = At(points, lengths, from);
                 var last = At(points, lengths, to);
                 var geometry = new StreamGeometry();
@@ -153,11 +154,7 @@ namespace GlassClicker
                     writer.LineTo(last, true, false);
                 }
                 geometry.Freeze();
-                var palette = Palette.Get(colors[i]);
-                var tone = Glass.Mix(((SolidColorBrush)palette.Marker).Color, palette.Main, .18);
-                var widths = new[] { 15.0, 9.0, 3.8 };
-                var alphas = new byte[] { 47, 102, 248 };
-                var pens = widths.Select((size, band) => Stroke(tone, (byte)Math.Round(alphas[band] * strength),
+                var pens = widths.Select((size, layer) => Stroke(band.Tone, (byte)Math.Round(alphas[layer] * strength),
                     size * scale * (.63 + .37 * strength))).ToArray();
                 result.Add(new Segment { Path = geometry, Glow = pens });
             }
@@ -167,7 +164,7 @@ namespace GlassClicker
         private static Pen Stroke(Color tone, byte alpha, double thickness)
         {
             var pen = new Pen(Glass.Fill(Glass.Tint(tone, alpha)), thickness)
-                { LineJoin = PenLineJoin.Round, StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
+                { LineJoin = PenLineJoin.Round };
             pen.Freeze();
             return pen;
         }

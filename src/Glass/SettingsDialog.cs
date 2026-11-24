@@ -20,8 +20,8 @@ namespace GlassClicker
             if (owner != null) Owner = owner;
             var card = Glass.Card(new Thickness(15));
             var body = new StackPanel();
-            card.Child = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false };
+            var layout = new DockPanel();
+            card.Child = layout;
             Content = card;
 
             var heading = TaskPanel.Columns(new GridLength(1, GridUnitType.Star), GridLength.Auto);
@@ -31,7 +31,8 @@ namespace GlassClicker
             AutomationProperties.SetName(close, "关闭设置");
             close.Click += (sender, args) => Close();
             Glass.On(heading, close, 0, 1);
-            body.Children.Add(heading);
+            DockPanel.SetDock(heading, Dock.Top);
+            layout.Children.Add(heading);
             DragBy(heading);
             PreviewKeyDown += (sender, args) => { if (args.Key == Key.Escape) { args.Handled = true; Close(); } };
 
@@ -59,6 +60,19 @@ namespace GlassClicker
             Glass.Hint(automaticPause, "调试一枚时暂缓其他任务。收起后自动继续。");
             body.Children.Add(Row("调试时暂停其他连点", automaticPause));
             body.Children.Add(OutlineControl(host));
+
+            var rememberPosition = Glass.Button(host.RememberPanelPosition ? "已开启" : "已关闭", Glass.White,
+                host.RememberPanelPosition ? Glass.Blue : Glass.Muted);
+            AutomationProperties.SetName(rememberPosition, "切换记住面板位置");
+            rememberPosition.Click += (sender, args) =>
+            {
+                var enabled = !host.RememberPanelPosition;
+                var error = host.ChangeRememberPanelPosition(enabled);
+                rememberPosition.Content = enabled ? "已开启" : "已关闭";
+                rememberPosition.Foreground = enabled ? Glass.Blue : Glass.Muted;
+                Notice(error ?? (enabled ? "✓ 已记住拖动后的面板位置" : "✓ 面板将在小球旁边打开"), error != null);
+            };
+            body.Children.Add(Row("记住拖动后的面板位置", rememberPosition));
 
             if (task != null)
             {
@@ -127,7 +141,11 @@ namespace GlassClicker
             notice = Glass.Text("", 11, Glass.Muted);
             notice.TextTrimming = TextTrimming.CharacterEllipsis;
             notice.Height = 20;
-            body.Children.Add(notice);
+            notice.Visibility = Visibility.Collapsed;
+            DockPanel.SetDock(notice, Dock.Bottom);
+            layout.Children.Add(notice);
+            layout.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false });
         }
 
         private static readonly ControlTemplate StrengthTrack = (ControlTemplate)XamlReader.Parse(
@@ -167,7 +185,7 @@ namespace GlassClicker
             var content = new StackPanel();
             var heading = TaskPanel.Columns(new GridLength(1, GridUnitType.Star), GridLength.Auto);
             var percent = Glass.Text(StrengthLabel(host.OutlineStrength), 11, Glass.Muted);
-            Glass.On(heading, Glass.Text("窗口弧光强度", 12, Glass.Ink, true), 0, 0);
+            Glass.On(heading, Glass.Text("弧光强度", 12, Glass.Ink, true), 0, 0);
             Glass.On(heading, percent, 0, 1);
             content.Children.Add(heading);
             var slider = new Slider { Minimum = 0, Maximum = 100, Value = host.OutlineStrength, SmallChange = 1, LargeChange = 10,
@@ -202,6 +220,7 @@ namespace GlassClicker
         {
             notice.Text = message;
             notice.Foreground = error ? Glass.DeleteInk : Glass.Green;
+            notice.Visibility = String.IsNullOrEmpty(message) ? Visibility.Collapsed : Visibility.Visible;
             Glass.Hint(notice, message);
         }
 

@@ -122,6 +122,7 @@ namespace GlassClicker
         private GlassOrb statusAnchor;
         private ScreenPoint? statusHome;
         private ClickTask hiddenEditor;
+        private ScreenPoint? hiddenEditorPosition;
         private GlassOrb hiddenStatusAnchor;
         private ScreenPoint? hiddenStatusPosition;
         private bool hiddenWasExpanded;
@@ -149,6 +150,7 @@ namespace GlassClicker
         public bool HasRunningJobs { get { return tasks.Any(task => task.Worker.State.HasSession); } }
         public bool LocatorVisible { get { return locator != null; } }
         public bool PauseOthersWhileEditing { get { return preferences.PauseOthersWhileEditing; } }
+        public bool RememberPanelPosition { get { return preferences.RememberPanelPosition; } }
         public int OutlineStrength { get { return preferences.OutlineStrength; } }
         private bool Running { get { return tasks.Any(CountsAsGroupOutput); } }
 
@@ -475,6 +477,7 @@ namespace GlassClicker
             if (!hidden)
             {
                 hiddenEditor = panel == null ? null : panel.Task;
+                hiddenEditorPosition = panel == null ? (ScreenPoint?)null : panel.Position;
                 hiddenStatusAnchor = statusAnchor;
                 hiddenStatusPosition = status == null ? (ScreenPoint?)null : status.Position;
                 hiddenWasExpanded = expanded;
@@ -482,11 +485,16 @@ namespace GlassClicker
                 return;
             }
             var editor = hiddenEditor;
+            var editorPosition = hiddenEditorPosition;
             var anchor = hiddenStatusAnchor;
             var position = hiddenStatusPosition;
             expanded = hiddenWasExpanded && tasks.Count > 1;
             ShowOrbs();
-            if (editor != null && tasks.Contains(editor)) ShowEditor(editor);
+            if (editor != null && tasks.Contains(editor))
+            {
+                ShowEditor(editor);
+                if (panel != null && editorPosition.HasValue) panel.Move(editorPosition.Value);
+            }
             else if (anchor != null && (anchor == hub || tasks.Any(task => task.Orb == anchor))) OpenStatus(anchor, position);
         }
 
@@ -494,15 +502,6 @@ namespace GlassClicker
         {
             var foreground = Windows.ForegroundTarget();
             return Windows.IsFullscreen(foreground) ? foreground : IntPtr.Zero;
-        }
-
-        private static ScreenPoint OverlayPosition(GlassWindow window, IntPtr foreground, ScreenPoint? preferred = null)
-        {
-            var bounds = Forms.Screen.FromHandle(foreground).Bounds;
-            if (preferred.HasValue && bounds.Contains(preferred.Value.X, preferred.Value.Y)) return preferred.Value;
-            var scale = Windows.Dpi(foreground) / 96.0;
-            return new ScreenPoint(bounds.Right - (int)((window.Width + 24) * scale),
-                bounds.Top + (int)(36 * scale));
         }
 
         public void ChangeShortcut(string value)
@@ -987,6 +986,8 @@ namespace GlassClicker
                 panel.RaiseWithoutFocus();
                 return;
             }
+            var anchor = task.Orb.IsVisible ? task.Orb : hub.IsVisible ? hub : task.Orb;
+            var anchorPosition = anchor.IsVisible ? anchor.Position : task.Home;
             var recognized = task.Target == null ? TargetBinding.Create(Windows.RecognizeGameWindow(Windows.ForegroundTarget())) : null;
             if (recognized != null) SetTarget(task, recognized);
             var previous = panel == null ? null : panel.Task;
@@ -1011,9 +1012,10 @@ namespace GlassClicker
                 QueueEditingPause();
                 if (!exiting) { ReturnToOrb(task); RememberCurrentLayout(); }
             };
-            ShowWindow(editor, fullscreen == IntPtr.Zero ? task.EditorHome ?? PanelPosition(editor, task.Orb, task.Home) :
-                OverlayPosition(editor, fullscreen, task.EditorHome));
-            Glass.Animate(editor.Card, true, editor.Position.X < task.Home.X);
+            var nearby = PanelPosition(editor, anchor, anchorPosition);
+            ShowWindow(editor, (RememberPanelPosition ? task.EditorHome : null) ?? nearby);
+            Glass.Animate(editor.Card, true, editor.Position.X < anchorPosition.X);
+            QueueOutlineLayout();
             if (!keyRegistered) editor.ShowMessage(shortcut.Text + " 正被占用", true);
             else if (recognized != null) editor.ShowMessage("已识别 " + recognized.ShortName);
             RefreshLabels();
@@ -1209,12 +1211,14 @@ namespace GlassClicker
             if (task.Worker.State.HasSession) task.Worker.TogglePause();
             else StartOne(task);
             RefreshLabels();
+            QueueOutlineLayout();
         }
 
         public void StopOne(ClickTask task)
         {
             task.Worker.Stop();
             RefreshLabels();
+            QueueOutlineLayout();
         }
 
         private void ToggleAll()
@@ -1324,7 +1328,7 @@ namespace GlassClicker
             status.ProtectFocus(true);
             status.FullscreenOverlay = fullscreen != IntPtr.Zero;
             var card = Glass.Card(new Thickness(13, 10, 13, 11));
-            statusEdge = new EdgeLight(card, tasks.Select(item => Palette.Get(item.Color).Main).ToArray());
+            statusEdge = new EdgeLight(tasks.Select(item => Palette.Get(item.Color).Rim).ToArray());
             card.BorderBrush = statusEdge.Brush;
             card.BorderThickness = new Thickness(1.6);
             var contents = new Grid();
@@ -1335,7 +1339,7 @@ namespace GlassClicker
                 new GridLength(28), new GridLength(8), new GridLength(30), new GridLength(5), new GridLength(30));
             heading.Background = Brushes.Transparent;
             Glass.On(heading, Glass.Text("输出进程", 17, Glass.Ink, true), 0, 0);
-            status.DragBy(heading, point => { statusHome = point; Touch(); });
+            status.DragBy(heading, point => { statusHome = point; Touch(); ScheduleLayoutSave(); });
             status.LocationChanged += (sender, args) =>
             {
                 if (ReferenceEquals(sender, status)) MoveUndo(status.Position);
@@ -1407,10 +1411,8 @@ namespace GlassClicker
                 if (args.Key != Key.Escape) return;
                 args.Handled = true; CloseStatus(); Touch();
             };
-            var preferred = previousPosition ?? statusHome;
-            ShowWindow(status, fullscreen == IntPtr.Zero ?
-                preferred ?? PanelPosition(status, orb, orb == hub ? HubPosition() : orb.Position, true) :
-                OverlayPosition(status, fullscreen, preferred));
+            var preferred = previousPosition ?? (RememberPanelPosition ? statusHome : null);
+            ShowWindow(status, preferred ?? PanelPosition(status, orb, orb == hub ? HubPosition() : orb.Position, true));
             Glass.Animate(card, true);
             RefreshLabels();
         }
@@ -1429,7 +1431,8 @@ namespace GlassClicker
         private void ShowOrbs()
         {
             hidden = false;
-            hiddenEditor = null; hiddenStatusAnchor = null; hiddenStatusPosition = null; hiddenWasExpanded = false;
+            hiddenEditor = null; hiddenEditorPosition = null; hiddenStatusAnchor = null;
+            hiddenStatusPosition = null; hiddenWasExpanded = false;
             if (!packing && (tasks.Count == 0 || tasks.Count > 1 && !expanded))
             {
                 foreach (var task in tasks) task.Orb.Hide();
@@ -1550,8 +1553,15 @@ namespace GlassClicker
             preferences.OutlineStrength = strength;
             if (strength == 0) { ClearLocatorPreview(); ClearOutlines(); }
             else QueueOutlineLayout();
+            RefreshLabels();
             settingsSaveTimer.Stop();
             settingsSaveTimer.Start();
+        }
+
+        public string ChangeRememberPanelPosition(bool enabled)
+        {
+            preferences.RememberPanelPosition = enabled;
+            return SaveSettings();
         }
 
         public void SaveConfiguration(SettingsDialog owner)
@@ -1662,6 +1672,8 @@ namespace GlassClicker
             tasks.Clear(); hub.Hide();
             if (layout.HubLeft.HasValue && layout.HubTop.HasValue)
                 hubHome = ClampAt(new ScreenPoint(layout.HubLeft.Value, layout.HubTop.Value), 160, 118, hub.Scale);
+            statusHome = layout.OutputLeft.HasValue && layout.OutputTop.HasValue
+                ? (ScreenPoint?)new ScreenPoint(layout.OutputLeft.Value, layout.OutputTop.Value) : null;
             foreach (var saved in layout.Jobs) MakeTask(saved, tasks.Count);
             ShowOrbs();
             return keyLoaded;
@@ -1670,6 +1682,8 @@ namespace GlassClicker
         private SavedLayout CaptureLayout()
         {
             return new SavedLayout { Version = 1, Shortcut = shortcut.Text, HubLeft = hubHome.X, HubTop = hubHome.Y,
+                OutputLeft = statusHome.HasValue ? (int?)statusHome.Value.X : null,
+                OutputTop = statusHome.HasValue ? (int?)statusHome.Value.Y : null,
                 Jobs = tasks.Select(task => task.Snapshot(false)).ToList() };
         }
 
@@ -1731,9 +1745,9 @@ namespace GlassClicker
                 }
                 if (panel != null || status != null)
                 {
-                    var fullscreen = ForegroundFullscreen();
-                    if (panel != null) RefreshProtection(panel, fullscreen, panel.Task.EditorHome);
-                    if (status != null) RefreshProtection(status, fullscreen, statusHome);
+                    var fullscreen = ForegroundFullscreen() != IntPtr.Zero;
+                    if (panel != null) panel.FullscreenOverlay = fullscreen;
+                    if (status != null) status.FullscreenOverlay = fullscreen;
                 }
                 RefreshLabels();
             }
@@ -1748,14 +1762,6 @@ namespace GlassClicker
                 task.Orb.ContextMenu.IsOpen) || (status != null && (status.IsMouseOver || status.IsMouseCaptureWithin)))
                 lastInteraction = now;
             if (now - lastInteraction >= (status == null ? OrbsOnlyIdle : ProcessPanelIdle)) Collapse();
-        }
-
-        private static void RefreshProtection(GlassWindow window, IntPtr fullscreen, ScreenPoint? preferred)
-        {
-            var protect = fullscreen != IntPtr.Zero;
-            if (window.FullscreenOverlay == protect) return;
-            window.FullscreenOverlay = protect;
-            if (protect) window.Move(OverlayPosition(window, fullscreen, preferred));
         }
 
         private void Touch()
@@ -1839,11 +1845,11 @@ namespace GlassClicker
                 var orbitCount = state.Holding ? count : CompactCount(state.Count);
                 var detail = destination + " · " + count + (state.Phase == RunPhase.Paused ? " · " + PhaseText(state) : "");
                 var lit = task.OutputActive;
-                if (lit) activeColors.Add(Palette.Get(task.Color).Main);
+                if (lit) activeColors.Add(Palette.Get(task.Color).Rim);
                 if (task.Orb.IsVisible)
                 {
                     task.Orb.Display(keys, " · " + orbitCount, shortTitle, state.Phase, detail);
-                    task.Orb.ShowOutputLight(lit);
+                    task.Orb.ShowOutputLight(lit, OutlineStrength);
                 }
                 if (hub.IsVisible) hub.DisplayProcess(i, keys, " · " + orbitCount, destination, state.Phase, detail);
                 ProcessRow row;
@@ -1869,12 +1875,12 @@ namespace GlassClicker
                 if (hub.IsVisible)
                 {
                     hub.Display("", "", tasks.Count == 0 ? "添加一枚连点" : "输出进程", aggregate);
-                    hub.ShowOutputLight(colors.Length > 0, colors);
+                    hub.ShowOutputLight(colors.Length > 0, OutlineStrength, colors);
                 }
                 if (statusEdge != null)
                 {
                     if (colors.Length > 0) statusEdge.SetColors(colors);
-                    statusEdge.SetLit(colors.Length > 0);
+                    statusEdge.SetLit(colors.Length > 0 && OutlineStrength > 0, OutlineStrength);
                 }
             }
             if (statusStart != null)
@@ -1942,8 +1948,9 @@ namespace GlassClicker
             foreach (var task in tasks)
             {
                 var target = task.OutputTarget;
-                if (target != null) AddOutlineColor(groups, target.Window, task.Color);
-                if (panel != null && panel.Task == task && task.Target != null && task.Target != target)
+                if (task.OutputActive) AddOutlineColor(groups, target.Window, task.Color);
+                if (panel != null && panel.Task == task && task.Target != null &&
+                    (!task.Worker.State.HasSession || task.Target != target))
                     AddOutlineColor(groups, task.Target.Window, task.Color);
             }
             if (locatorTask != null) AddOutlineColor(groups, pointedWindow, locatorTask.Color);
@@ -2029,11 +2036,11 @@ namespace GlassClicker
             var width = (int)Math.Round(window.Width * scale);
             var height = (int)Math.Round(window.Height * scale);
             var center = CenterOf(orb, home);
-            var gap = (int)(45 * scale);
+            var gap = (int)((orb == hub && tasks.Count > 0 ? orb.Width / 2 + 5 : 35) * scale);
             var left = new ScreenPoint(center.X - gap - width, center.Y - gap);
             var right = new ScreenPoint(center.X + gap, center.Y - gap);
-            var below = new ScreenPoint(center.X - width / 2, center.Y + (int)(87 * scale));
-            var above = new ScreenPoint(center.X - width / 2, center.Y - height - (int)(42 * scale));
+            var below = new ScreenPoint(center.X - width / 2, center.Y + (int)(Math.Max(82, gap / scale) * scale));
+            var above = new ScreenPoint(center.X - width / 2, center.Y - height - gap);
             var options = group ? new[] { below, above, left, right } : new[] { left, right, below, above };
             var best = home;
             var bestCost = Double.MaxValue;
@@ -2060,7 +2067,7 @@ namespace GlassClicker
 
         private void RepositionPanels(GlassOrb orb)
         {
-            if (status != null && statusAnchor == orb && !status.FocusProtected && !statusHome.HasValue)
+            if (status != null && statusAnchor == orb && !(RememberPanelPosition && statusHome.HasValue))
                 status.Move(PanelPosition(status, orb, orb.Position, true));
         }
 

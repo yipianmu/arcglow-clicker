@@ -1,0 +1,24 @@
+name: Publish ArcGlow v0.1.0 portable
+on:
+  push:
+    branches: ['release/v0.1.0-portable']
+    paths: ['.github/workflows/publish-v0-1-0-portable.yml']
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify and attach the executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA"
+          asset='ArcGlow-v0.1.0-Portable.exe'
+          curl -fsSL --retry 2 "$base_url/$asset" -o "$asset"
+          curl -fsSL --retry 2 "$base_url/release-notes.md" -o release-notes.md
+          curl -fsSL --retry 2 "$base_url/SHA256SUMS" -o SHA256SUMS
+          sha256sum --check SHA256SUMS
+          gh release upload v0.1.0 "$asset#Windows 便携版" --repo "$GITHUB_REPOSITORY"
+          gh release edit v0.1.0 --repo "$GITHUB_REPOSITORY" --verify-tag --latest --notes-file release-notes.md
